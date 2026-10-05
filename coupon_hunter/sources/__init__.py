@@ -13,12 +13,14 @@ from ..models import FetchResult
 from .aggregator import fetch_aggregator
 from .http_json import fetch_http_json
 from .meituan_official import fetch_meituan_official
+from .union_api import fetch_union_api
 
 # type 字段 -> 处理函数
 _REGISTRY = {
     "aggregator": fetch_aggregator,
     "meituan_official": fetch_meituan_official,
     "http_json": fetch_http_json,
+    "union_api": fetch_union_api,
 }
 
 

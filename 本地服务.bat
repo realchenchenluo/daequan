@@ -2,7 +2,7 @@
 REM ---------------------------------------------------------------
 REM  Starts the local coupon web server.
 REM  100%% ASCII on purpose - see the note in the other .bat for why.
-REM  Chinese help: open the .md file, section 3.
+REM  Chinese help: open the .md file, section 1.
 REM ---------------------------------------------------------------
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"

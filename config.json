@@ -35,10 +35,34 @@
       "auto_claim": false
     },
     {
+      "id": "taobao_dataoke",
+      "type": "union_api",
+      "enabled": false,
+      "profile": "dataoke",
+      "label": "淘宝大额券（大淘客）",
+      "platform": "淘宝",
+      "appkey": "",
+      "tag": "商品券",
+      "_怎么用": "去 https://www.dataoke.com 免费注册，在开放平台拿 appKey 填到上面的 appkey，然后把 enabled 改成 true"
+    },
+    {
+      "id": "douyin_zhetaoke",
+      "type": "union_api",
+      "enabled": false,
+      "profile": "zhetaoke_douyin",
+      "label": "抖音券（折淘客）",
+      "platform": "抖音",
+      "appkey": "",
+      "sid": "",
+      "keyword": "",
+      "tag": "抖音券",
+      "_怎么用": "去 https://www.zhetaoke.com 免费注册拿 appkey，再做一次淘客账号授权拿 sid，两个都填上，然后把 enabled 改成 true"
+    },
+    {
       "id": "my_union_api",
       "type": "http_json",
       "enabled": false,
-      "label": "自建：淘宝联盟 / 大淘客",
+      "label": "自建：任何返回 JSON 的券接口",
       "platform": "淘宝闪购",
       "url": "https://openapi.dataoke.com/api/goods/get-goods-list",
       "method": "GET",
