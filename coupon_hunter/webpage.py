@@ -14,11 +14,30 @@
 from __future__ import annotations
 
 import html
+import os
 from datetime import datetime
 
 from .models import Coupon
 
 _ALLOWED_SCHEMES = ("http://", "https://")
+
+# 页面上的时间统一按这个时区显示。
+# 为什么必须固定：GitHub Actions 的服务器跑在 UTC，如果直接用本机时间，
+# 部署出去的页面会显示「更新于 14:08」，而你在北京看到的是晚上 10 点，会懵。
+# 本机跑的时候用户就在这个时区，所以两边显示一致。
+DEFAULT_TZ = "Asia/Shanghai"
+
+
+def _now() -> datetime:
+    """当前时间，按 COUPON_TZ（默认北京时间）换算。"""
+    tz_name = os.environ.get("COUPON_TZ") or DEFAULT_TZ
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        # 系统没有时区数据库时退回本机时间，不影响主要功能
+        return datetime.now()
 
 
 def _safe_url(url: str) -> str:
@@ -97,7 +116,7 @@ def render(
 
     refresh_url 非空时会在页面上加「刷新」按钮（只有本地服务模式才用得上）。
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = _now().strftime("%Y-%m-%d %H:%M")
     cards = "\n".join(_card(c, i) for i, c in enumerate(coupons, 1))
 
     if not coupons:

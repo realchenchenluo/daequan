@@ -35,6 +35,10 @@ jobs:
           python-version: '3.12'
 
       - name: 抓取优惠券并生成静态页面
+        env:
+          # GitHub 的服务器跑在 UTC。不设这个的话，页面会显示「更新于 14:08」，
+          # 而你在北京看到的是晚上 10 点。固定成北京时间，和本机跑的结果一致。
+          COUPON_TZ: Asia/Shanghai
         run: |
           mkdir -p _site
           # Pages 默认会走 Jekyll 处理，关掉它，省时间也少一层意外
