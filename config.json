@@ -50,13 +50,13 @@
       "type": "union_api",
       "enabled": false,
       "profile": "zhetaoke_douyin",
-      "label": "抖音券（折淘客）",
+      "label": "抖音电商券（折淘客）",
       "platform": "抖音",
       "appkey": "",
       "sid": "",
       "keyword": "",
       "tag": "抖音券",
-      "_怎么用": "去 https://www.zhetaoke.com 免费注册拿 appkey，再做一次淘客账号授权拿 sid，两个都填上，然后把 enabled 改成 true"
+      "_怎么用": "去 https://www.zhetaoke.com 免费注册拿 appkey，再做一次淘客账号授权拿 sid，两个都填上，然后把 enabled 改成 true。注意两件事：① 这里覆盖的是抖音【电商】商品券，不是抖省省那种【到店团购】券（后者没有公开接口，任何人都接不了）；② 折淘客官网首页没宣传抖音，注册前先问客服是否开放、是否收费。"
     },
     {
       "id": "my_union_api",

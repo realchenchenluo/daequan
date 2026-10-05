@@ -69,6 +69,12 @@ PROFILES: dict[str, dict] = {
             "去 https://www.zhetaoke.com 注册（免费）拿 appkey，"
             "再按它文档做一次「淘客账号授权」拿到 sid，两个都填上。"
         ),
+        # ⚠️ 这个源的可信度不如大淘客，如实记下来：
+        #   · 接口路径确实存在（假 key 探活返回鉴权错误，不是 404）
+        #   · 但折淘客官网首页只宣传淘宝/京东板块，**通篇没提抖音**
+        #   · 抖音支持是一份第三方 MIT 协议 Rust SDK 里写的，不是官方文档
+        #   → 所以能不能开通、开通后怎么收费，注册前先问一下客服，别直接充钱
+        "verify_note": "这个源我没法替你确认可用性，注册前先问折淘客客服抖音接口是否开放。",
     },
 }
 
@@ -334,5 +340,10 @@ def fetch_union_api(cfg: dict) -> FetchResult:
 
     if not result.coupons:
         result.notes.append(f"[{label}] 接口通了但一条都没解析出来，可能字段变了或该分类暂时没券")
+
+    # 把「这个源我没验证过」这件事直接说给用户，别让他以为一定可用
+    verify_note = profile.get("verify_note")
+    if verify_note and result.coupons:
+        result.notes.append(f"[{label}] 提醒：{verify_note}")
 
     return result
