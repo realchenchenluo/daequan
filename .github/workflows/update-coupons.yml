@@ -1,0 +1,73 @@
+name: 更新优惠券页面
+
+# 为什么不直接在网页里调接口？
+# 因为那是跨域请求，浏览器会拦掉，而且会把第三方接口暴露在公开页面上。
+# 所以改成：让 GitHub 的服务器定时去抓，抓完生成静态页面，再发布出去。
+
+on:
+  schedule:
+    # ⚠️ GitHub Actions 的 cron 用的是 UTC 时间，不是北京时间。
+    # 下面这个写法 = 北京时间每天 07:00 和 19:00 各跑一次。
+    # 想改时间：北京时间 - 8 小时 = UTC。例如北京时间 09:00 → UTC 01:00 → '0 1 * * *'
+    - cron: '0 23,11 * * *'
+  # 允许在网页上手动点一次「Run workflow」立即刷新
+  workflow_dispatch:
+
+# 发布到 Pages 所需的权限，多一个都不给
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署，避免两次抓取互相覆盖
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 抓取优惠券并生成静态页面
+        run: |
+          mkdir -p _site
+          # Pages 默认会走 Jekyll 处理，关掉它，省时间也少一层意外
+          touch _site/.nojekyll
+          # 只跑免费聚合源：美团官方那个需要手机登录，
+          # 而把登录凭证放到 GitHub 上是绝对不能做的事（见下方注释）
+          python run.py 搜券 --网页 --全部 --输出 _site/index.html --源 free_aggregator
+
+      - name: 检查页面确实生成了
+        run: |
+          test -s _site/index.html || { echo "页面没生成出来"; exit 1; }
+          echo "页面大小：$(wc -c < _site/index.html) 字节"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  # ─────────────────────────────────────────────────────────────
+  # 关于美团官方直发券：这个流程里刻意没有启用。
+  #
+  # 它需要你手机号 + 短信验证码登录才能发券。要在这里跑，就得把你的
+  # 登录 token 存成 GitHub Secret。那是把你的账号交给第三方服务器，
+  # 而且这个仓库是公开的 —— 绝对不做。
+  #
+  # 想领美团专属大额券，在本机跑：python run.py 登录 && python run.py 领券
+  # ─────────────────────────────────────────────────────────────
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

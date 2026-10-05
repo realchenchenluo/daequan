@@ -1,0 +1,20 @@
+# 登录凭证和历史记录：绝对不要提交到任何代码仓库
+data/
+*.tmp
+
+# 生成的网页和导出（_site 由 GitHub Actions 生成，不该提交）
+out/
+_site/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 如果你把 config.json 里填了 appKey，那它也是敏感文件，取消下面这行的注释
+# config.json
+
+# 编辑器和系统杂物
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

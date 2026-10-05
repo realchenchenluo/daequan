@@ -1,0 +1,60 @@
+{
+  "_说明": [
+    "sources 里每一条就是一个数据源，enabled 改成 false 就能停用它。",
+    "type 有三种：aggregator（免费聚合口令源）、meituan_official（美团官方直发券）、http_json（你自己接的联盟接口）。",
+    "",
+    "关于 meituan_official 的 ai_scene（推广渠道号）：",
+    "  这个字段接口要求必填，而且决定你领券产生的佣金归谁。",
+    "  所以这里**默认留空**，不内置任何人的编号——用别人的编号，佣金就归别人。",
+    "  想用美团专属大额券：去 https://union.meituan.com 免费注册，",
+    "  拿到你的推广位编号，填到下面的 ai_scene 里。",
+    "  留空时这个数据源会被自动跳过，其他功能不受影响。",
+    "",
+    "关于 auto_claim：",
+    "  美团那个接口只有「发券」没有「查券」，调一次就真的领一次。",
+    "  所以默认为 false —— 搜券时只告诉你「今天还没领」，不会偷偷把你的领取机会用掉。",
+    "  想让它每次搜券都自动领，改成 true，但那样你每天第一次搜券就等于领券了。",
+    "",
+    "想加淘宝联盟 / 大淘客 / 好单库，照着最后那条模板填就行，不用改代码。"
+  ],
+  "sources": [
+    {
+      "id": "free_aggregator",
+      "type": "aggregator",
+      "enabled": true,
+      "label": "免费聚合口令源",
+      "endpoint": "https://agskills.moontai.top/coupon/takeout",
+      "timeout": 20
+    },
+    {
+      "id": "meituan_official",
+      "type": "meituan_official",
+      "enabled": true,
+      "label": "美团官方直发券",
+      "ai_scene": "",
+      "auto_claim": false
+    },
+    {
+      "id": "my_union_api",
+      "type": "http_json",
+      "enabled": false,
+      "label": "自建：淘宝联盟 / 大淘客",
+      "platform": "淘宝闪购",
+      "url": "https://openapi.dataoke.com/api/goods/get-goods-list",
+      "method": "GET",
+      "params": {
+        "appKey": "在这里填你自己的 appKey",
+        "version": "v1.2.4",
+        "pageSize": "50"
+      },
+      "list_path": "data.list",
+      "field_map": {
+        "title": "title",
+        "code": "couponId",
+        "url": "couponLink",
+        "value": "couponPrice",
+        "threshold": "couponMinPrice"
+      }
+    }
+  ]
+}
