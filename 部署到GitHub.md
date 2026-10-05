@@ -1,20 +1,39 @@
 # 部署到 GitHub（手机随时随地都能打开）
 
+> ## ✅ 已经部署好了
+>
+> **你的网址：https://realchenchenluo.github.io/daequan/**
+>
+> - 仓库：https://github.com/realchenchenluo/daequan
+> - GitHub 每 **北京时间 07:00 和 19:00** 自动抓一次并更新页面
+> - 手机上打开上面那个网址 → 加到主屏幕，就跟装了个 App 一样
+>
+> 想立刻刷新：去 https://github.com/realchenchenluo/daequan/actions →
+> 选「更新优惠券页面」→ **Run workflow**
+>
+> ⚠️ **这个页面对所有人公开**（免费账号只能用公开仓库发布 Pages）。
+> 页面里只有券码，**不含你的任何个人信息**——我做过检查。但你要知道这件事。
+>
+> 下面的内容是完整的原理和排查指南，留着以后出问题用。
+
+---
+
 这份文档讲清楚一件事：**怎么让这个工具变成一个网址，你在外面用手机也能打开。**
 
 ---
 
 ## 先说结论：有两条路，建议都留着
 
-| | 本地服务（已经能用了） | GitHub Pages |
+| | 本地服务 | GitHub Pages ✅ 已部署 |
 |---|---|---|
-| 网址 | `http://192.168.8.109:8788` | `https://你的用户名.github.io/仓库名/` |
+| 网址 | `http://192.168.8.109:8788` | `https://realchenchenluo.github.io/daequan/` |
 | 手机能用吗 | 能，但**必须和电脑连同一个 WiFi** | 能，**任何地方、任何网络** |
 | 需要电脑开着吗 | 需要 | 不需要 |
-| 数据新鲜度 | 你点刷新就重抓 | GitHub 每 12 小时自动抓一次 |
+| 数据新鲜度 | 你点刷新就重抓 | 每 12 小时自动抓一次 |
 | 隐私 | 只有你局域网里的人看得到 | **公开的，有链接的人都能看** |
+| 美团专属券 | **有**（本机有登录态） | 没有（见第六节） |
 
-**现在的状态**：本地服务已经做好了，`本地服务.bat` 双击就能用。GitHub 这条路需要你配合两步，见下面第三节。
+**建议**：在家用本地服务（数据最新、券最全），出门用 GitHub（随时能开）。两者不冲突。
 
 ---
 
@@ -51,40 +70,44 @@ GitHub Pages 有个硬规则：**免费账号只能用「公开仓库」发布 P
 
 ## 三、部署步骤
 
-### 前提：先给 gh 加一个权限（只需一次）
+### 前提：一个我判断错了的地方（留个记录）
 
-我检查过了，你当前的 gh 登录**缺少 `workflow` 权限**。没有它，GitHub 会拒绝推送 `.github/workflows/` 下的文件（会报 `refusing to allow a Personal Access Token to update workflow`）。
+我一开始检查你的 gh 登录，看到权限只有 `gist, read:org, repo`，**没有 `workflow`**，就判断推送 `.github/workflows/` 下的文件会被 GitHub 拒绝，让你去跑 `gh auth refresh -s workflow`。
 
-所以先跑这一条：
+**这个判断是错的。** 实际推送一次就成功了，工作流文件正常上传，GitHub 也把它识别成了 active。
 
-```bash
-gh auth refresh -s workflow
-```
+原因大概是：那个 `workflow` 权限限制针对的是用 **API 直接创建/修改**工作流文件的场景；而 `git push` 走的是 git 协议加凭据助手，不受这条限制管。
 
-它会打开浏览器让你确认，授权完就好。**这一步必须你自己做**，我代替不了（会弹浏览器交互）。
+**结论：你不需要跑任何额外命令。** 已经部署好了。把这段留着，是为了以后再遇到类似问题时，不用重复我这个误判。
 
-### 然后二选一
-
-**方式 A：把仓库地址给我，我来推**
-
-你建好空仓库（或者告诉我一个已有仓库），把地址发我，我执行推送和后续配置。
-
-**方式 B：你自己跑**
+### 实际执行的命令（备查）
 
 ```bash
 cd "D:\Desktop\美团 淘宝闪购优惠券搜寻"
 
 git init
-git add .
-git commit -m "优惠猎手：美团/淘宝闪购/京东 优惠券聚合"
+git add -A
+git commit -m "优惠猎手：美团 / 淘宝闪购 / 京东 优惠券聚合工具"
 
-# 换成你自己的仓库地址
-git remote add origin https://github.com/你的用户名/coupon-hunter.git
+git fetch origin main
+git merge origin/main --allow-unrelated-histories   # 合并掉建仓时那个自动生成的 README
+
 git branch -M main
+git remote add origin https://github.com/realchenchenluo/daequan.git
 git push -u origin main
+
+# 开启 Pages，指定用 GitHub Actions 作为构建来源
+gh api -X POST repos/realchenchenluo/daequan/pages -f build_type=workflow
+
+# 手动触发第一次构建
+gh workflow run update-coupons.yml -R realchenchenluo/daequan
 ```
 
-### 最后一步：打开 Pages
+> 小坑记录：`git init` 在这台机器上默认建的是 `master` 分支，
+> 直接 `git push origin main` 会报 `src refspec main does not match any`。
+> 要先 `git branch -M main` 改名。
+
+### 然后是 Pages 配置
 
 推送成功后：
 
