@@ -56,7 +56,16 @@ def request(
     """发起 HTTP 请求，返回响应正文字符串。
 
     retries 表示失败后额外重试的次数（默认 2，即总共最多请求 3 次）。
-    只有网络层错误才重试；服务器返回 4xx/5xx 不重试（重试也没用）。
+
+    哪些情况会重试：
+      · 网络层错误（连不上、超时）
+      · 5xx 服务端错误（500/502/503/504）—— 这类通常是对面临时抽风，等一下就好
+    哪些不会重试：
+      · 4xx —— 请求本身有问题，重试多少次都一样
+
+    这条 5xx 重试是踩坑补上的：线上定时任务曾经因为免费接口返回一次 502
+    就整个构建失败、页面停在旧数据上。第三方免费接口偶尔抽风是常态，
+    不能让它把整条链路带崩。
     """
     if params:
         sep = "&" if urllib.parse.urlparse(url).query else "?"
@@ -75,7 +84,10 @@ def request(
     if headers:
         hdrs.update(headers)
 
+    # 服务端错误才值得重试
+    RETRYABLE_STATUS = {500, 502, 503, 504, 520, 522, 524}
     last_err: Exception | None = None
+
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
@@ -90,6 +102,10 @@ def request(
                 body = e.read().decode("utf-8", errors="replace")
             except Exception:
                 body = ""
+            if e.code in RETRYABLE_STATUS and attempt < retries:
+                last_err = e
+                time.sleep(1.5 * (attempt + 1))
+                continue
             raise HttpError(f"服务器返回 HTTP {e.code}", status=e.code, body=body) from e
         except urllib.error.URLError as e:
             last_err = e

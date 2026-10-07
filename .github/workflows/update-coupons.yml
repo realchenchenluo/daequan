@@ -43,14 +43,26 @@ jobs:
           mkdir -p _site
           # Pages 默认会走 Jekyll 处理，关掉它，省时间也少一层意外
           touch _site/.nojekyll
+
+          # 第一步：先把当前线上那份抓回来当兜底。
+          # 第三方免费接口偶尔会 5xx（实测遇到过一次 502），那次如果直接
+          # 发布一个空页面，比停在旧数据上糟糕得多。
+          curl -sf --max-time 25 "https://realchenchenluo.github.io/daequan/" \
+            -o _site/index.html || echo "没取到线上旧页面（首次部署时会这样）"
+
+          # 第二步：抓新的。auto 在「抓到 0 条」时不会覆盖上面那个兜底文件。
           # 只跑免费聚合源：美团官方那个需要手机登录，
           # 而把登录凭证放到 GitHub 上是绝对不能做的事（见下方注释）
-          python run.py 搜券 --网页 --全部 --输出 _site/index.html --源 free_aggregator
+          python run.py auto --输出 _site/index.html --源 free_aggregator || true
 
-      - name: 检查页面确实生成了
+          echo "页面大小：$(wc -c < _site/index.html 2>/dev/null || echo 0) 字节"
+
+      - name: 检查页面确实可用
         run: |
-          test -s _site/index.html || { echo "页面没生成出来"; exit 1; }
-          echo "页面大小：$(wc -c < _site/index.html) 字节"
+          test -s _site/index.html || { echo "没有任何可用页面（首次部署且抓取失败）"; exit 1; }
+          grep -q 'class="card"' _site/index.html \
+            && echo "✅ 页面里有券，可以发布" \
+            || { echo "⚠️ 页面里没有券，仍会发布（保留的是上一版）"; }
 
       - uses: actions/upload-pages-artifact@v3
         with:

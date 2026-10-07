@@ -61,10 +61,17 @@ jobs:
         run: |
           mkdir -p _site
           touch _site/.nojekyll
-          python run.py 搜券 --网页 --全部 --输出 _site/index.html --源 free_aggregator
+          # 和 GitHub Pages 那套同样的兜底逻辑：
+          # 先取线上旧页面，抓到 0 条时 auto 不覆盖它，避免发布空页面
+          curl -sf --max-time 25 "https://realchenchenluo.github.io/daequan/" \
+            -o _site/index.html || echo "没取到线上旧页面"
+          python run.py auto --输出 _site/index.html --源 free_aggregator || true
+          echo "页面大小：$(wc -c < _site/index.html 2>/dev/null || echo 0) 字节"
 
-      - name: 检查页面生成了
-        run: test -s _site/index.html
+      - name: 检查页面确实可用
+        run: |
+          test -s _site/index.html || { echo "没有任何可用页面"; exit 1; }
+          grep -q 'class="card"' _site/index.html && echo "✅ 页面里有券" || echo "⚠️ 页面里没有券"
 
       - name: 推送到 Cloudflare Pages
         uses: cloudflare/wrangler-action@v3

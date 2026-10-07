@@ -351,11 +351,16 @@ def cmd_sources(sources: list[dict]) -> int:
     return 0
 
 
-def cmd_auto() -> int:
+def cmd_auto(opts: dict | None = None) -> int:
     """定时任务用的静默模式：抓一遍 → 刷新网页 → 写一条日志。
 
-    刻意不写领取历史：每天自动跑一次，如果每次都往 history.json 里塞 50 条，
-    用不了几天就把有用的记录挤没了。
+    两个刻意的设计，都是踩坑补的：
+
+    1. **抓到 0 条时不覆盖已有页面。** 第三方免费接口偶尔抽风是常态
+       （实测遇到过一次 HTTP 502）。如果那次就把页面写成「一张券都没有」，
+       你打开看到的就是个空页面——比旧数据糟糕得多。所以没抓到就保留原样。
+    2. **不写领取历史。** 每天自动跑一次，每次塞 50 条记录，
+       用不了几天就把有用的记录挤没了。
     """
     from datetime import datetime
 
@@ -363,6 +368,7 @@ def cmd_auto() -> int:
     from .store import data_dir
     from .webpage import render
 
+    opts = opts or {}
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_path = data_dir() / "auto.log"
 
@@ -373,17 +379,37 @@ def cmd_auto() -> int:
         except Exception:
             pass
 
+    # 输出路径：
+    #   · 没给 --输出 → 项目目录下的 out/优惠券.html（本机定时任务用这个）
+    #   · 给了相对路径 → 按【当前工作目录】解析，不是项目目录。
+    #     因为调用方（比如 CI）给相对路径时，预期就是相对它自己的 cwd。
+    #     早先版本一律按项目目录解析，结果从别的目录跑就会写错地方。
+    if opts.get("输出"):
+        out_path = Path(opts["输出"])
+        if not out_path.is_absolute():
+            out_path = Path.cwd() / out_path
+    else:
+        out_path = PROJECT_ROOT / "out" / "优惠券.html"
+
     try:
-        result = fetch_all(_auto_sources())
+        result = fetch_all(_auto_sources(), only=opts.get("源"))
         coupons = dedupe(rank(result.coupons))
 
-        out = PROJECT_ROOT / "out" / "优惠券.html"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(render(coupons, result), encoding="utf-8")
-
-        log(f"成功：抓到 {len(coupons)} 条，已写入 {out.name}")
         for e in result.errors:
             log(f"  数据源报错：{e}")
+
+        if not coupons:
+            kept = "保留原页面" if out_path.exists() else "目标文件不存在，无法兜底"
+            log(f"本次抓到 0 条，{kept}")
+            for n in result.notes:
+                log(f"  提示：{n}")
+            # 保留旧页面时返回 0（这不是错误，是「本次没更新」）；
+            # 连兜底文件都没有才返回 1，让调用方知道真的没东西可用
+            return 0 if out_path.exists() else 1
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(render(coupons, result), encoding="utf-8")
+        log(f"成功：抓到 {len(coupons)} 条，已写入 {out_path}")
         for n in result.notes:
             log(f"  提示：{n}")
         return 0
@@ -558,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "menu":
         return cmd_menu(sources)
     if cmd == "auto":
-        return cmd_auto()
+        return cmd_auto(opts)
     if cmd == "schedule":
         return cmd_schedule(opts)
     if cmd == "shortcut":
