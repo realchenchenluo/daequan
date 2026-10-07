@@ -1,0 +1,75 @@
+name: 同步到 Cloudflare Pages
+
+# 这个工作流是【可选】的。
+# 没配置 Cloudflare 密钥时它会自动跳过，不会失败、不会报错，你什么都不用管。
+# 想启用就按 部署到Cloudflare.md 里的三步做。
+
+on:
+  schedule:
+    # 和 GitHub Pages 那个工作流同一时间跑，两个站点内容保持一致
+    - cron: '0 23,11 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'coupon_hunter/**'
+      - 'run.py'
+      - 'config.json'
+      - '.github/workflows/deploy-cloudflare.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-pages
+  cancel-in-progress: false
+
+jobs:
+  # 先判断密钥配了没有。没配就整体跳过，避免 Actions 页面上一堆红色叉号。
+  precheck:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$ACCOUNT" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "未配置 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID，跳过。"
+            echo "配置方法见 部署到Cloudflare.md"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-deploy:
+    needs: precheck
+    if: needs.precheck.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 生成静态页面
+        env:
+          COUPON_TZ: Asia/Shanghai
+        run: |
+          mkdir -p _site
+          touch _site/.nojekyll
+          python run.py 搜券 --网页 --全部 --输出 _site/index.html --源 free_aggregator
+
+      - name: 检查页面生成了
+        run: test -s _site/index.html
+
+      - name: 推送到 Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # project-name 要和你在 Cloudflare 上建的 Pages 项目名一致
+          command: pages deploy _site --project-name=daequan
