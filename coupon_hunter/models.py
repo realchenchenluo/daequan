@@ -34,8 +34,20 @@ class Coupon:
     score_reason: str = ""
 
     def key(self) -> str:
-        """去重用的唯一标识：同平台同名同券码视为同一张券。"""
-        return f"{self.platform}|{self.title}|{self.code}"
+        """去重用的唯一标识。
+
+        分三种情况：
+          · 有券码 → 平台 + 券名 + 券码（券码本身就能定位一张券）
+          · 没有券码但有链接 → **只用链接**。链接相同就是同一个落地页，
+            标题可能各处写得不一样（实测同一个二维码在四个端点上分别叫
+            「更多类型优惠券」和「更多优惠券！」），带上标题就合并不掉。
+          · 都没有 → 平台 + 券名
+        """
+        if self.code:
+            return f"{self.platform}|{self.title}|{self.code}"
+        if self.url:
+            return self.url
+        return f"{self.platform}|{self.title}"
 
     def discount_text(self) -> str:
         """人话描述这张券的力度。"""

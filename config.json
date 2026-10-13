@@ -15,7 +15,13 @@
     "  所以默认为 false —— 搜券时只告诉你「今天还没领」，不会偷偷把你的领取机会用掉。",
     "  想让它每次搜券都自动领，改成 true，但那样你每天第一次搜券就等于领券了。",
     "",
-    "想加淘宝联盟 / 大淘客 / 好单库，照着最后那条模板填就行，不用改代码。"
+    "想加淘宝联盟 / 大淘客 / 好单库，照着最后那条模板填就行，不用改代码。",
+    "",
+    "trip/movie/parcel 三个源是同一个免费站点的其他端点，全部启用后一起能拿到：",
+    "  外卖口令 + 出行券（滴滴/携程）+ 电影票券（淘票票）+ 快递券",
+    "",
+    "mcd_official 是麦当劳中国官方 MCP 接口（全项目唯一的官方源），Token 免费，",
+    "地址 https://open.mcd.cn/mcp 。填好 Token 后建议先跑：python run.py 麦当劳"
   ],
   "sources": [
     {
@@ -27,12 +33,49 @@
       "timeout": 20
     },
     {
+      "id": "trip_coupons",
+      "type": "aggregator",
+      "enabled": true,
+      "label": "出行券（滴滴/携程）",
+      "platform": "出行",
+      "endpoint": "https://agskills.moontai.top/coupon/trip",
+      "timeout": 20
+    },
+    {
+      "id": "movie_coupons",
+      "type": "aggregator",
+      "enabled": true,
+      "label": "电影票券（淘票票）",
+      "platform": "电影票",
+      "endpoint": "https://agskills.moontai.top/coupon/movie",
+      "timeout": 20
+    },
+    {
+      "id": "parcel_coupons",
+      "type": "aggregator",
+      "enabled": true,
+      "label": "快递券",
+      "platform": "快递",
+      "endpoint": "https://agskills.moontai.top/coupon/parcel",
+      "timeout": 20
+    },
+    {
       "id": "meituan_official",
       "type": "meituan_official",
       "enabled": true,
       "label": "美团官方直发券",
       "ai_scene": "",
       "auto_claim": false
+    },
+    {
+      "id": "mcd_official",
+      "type": "mcd_mcp",
+      "enabled": false,
+      "label": "麦当劳官方券",
+      "platform": "麦当劳",
+      "token": "",
+      "tool": "available-coupons",
+      "_怎么用": "去 https://open.mcd.cn/mcp 手机号登录→控制台→激活→复制 Token 填到上面，再把 enabled 改成 true。这是麦当劳中国自己开放的官方接口，全项目里唯一一个官方源。填好后可以先跑 python run.py 麦当劳 看看能领到什么。"
     },
     {
       "id": "taobao_dataoke",

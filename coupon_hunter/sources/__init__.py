@@ -12,6 +12,7 @@ from __future__ import annotations
 from ..models import FetchResult
 from .aggregator import fetch_aggregator
 from .http_json import fetch_http_json
+from .mcd import fetch_mcd
 from .meituan_official import fetch_meituan_official
 from .union_api import fetch_union_api
 
@@ -21,21 +22,30 @@ _REGISTRY = {
     "meituan_official": fetch_meituan_official,
     "http_json": fetch_http_json,
     "union_api": fetch_union_api,
+    "mcd_mcp": fetch_mcd,
 }
 
 
 def fetch_all(sources: list[dict], only: str | None = None) -> FetchResult:
     """跑一遍所有启用的数据源。
 
-    only: 只跑 id 匹配的某一个源（用于排查问题）。
+    only: 只跑指定的源。支持逗号分隔的多个 id，例如
+          only="free_aggregator,trip_coupons,movie_coupons,parcel_coupons"
+          （线上定时任务需要这个——它只跑不需要注册的那几个源，
+            不能把要 Token 的源也带上，否则页面底部会多出一堆"还没填 key"的提示。）
     单个源失败不会中断整体——把错误收集起来，其他源照常工作。
     """
     result = FetchResult()
     ran = 0
 
+    # 把 "a,b,c" 拆成 {"a","b","c"}；没给就表示不筛选
+    wanted: set[str] | None = None
+    if only:
+        wanted = {s.strip() for s in str(only).split(",") if s.strip()}
+
     for cfg in sources:
         sid = cfg.get("id", "unnamed")
-        if only and sid != only:
+        if wanted is not None and sid not in wanted:
             continue
         if not cfg.get("enabled", True):
             continue
@@ -56,6 +66,12 @@ def fetch_all(sources: list[dict], only: str | None = None) -> FetchResult:
             result.errors.append(f"[{label}] 抓取失败：{e}")
 
     if ran == 0:
-        result.notes.append("没有任何数据源被运行，请检查 config.json 里的 enabled 字段。")
+        if wanted is not None:
+            result.errors.append(
+                f"指定的数据源一个都没跑到：{[s for s in wanted]}。"
+                "检查 config.json 里这些 id 是否存在、enabled 是否为 true。"
+            )
+        else:
+            result.notes.append("没有任何数据源被运行，请检查 config.json 里的 enabled 字段。")
 
     return result

@@ -65,7 +65,7 @@ jobs:
           # 先取线上旧页面，抓到 0 条时 auto 不覆盖它，避免发布空页面
           curl -sf --max-time 25 "https://realchenchenluo.github.io/daequan/" \
             -o _site/index.html || echo "没取到线上旧页面"
-          python run.py auto --输出 _site/index.html --源 free_aggregator || true
+          python run.py auto --输出 _site/index.html --源 "free_aggregator,trip_coupons,movie_coupons,parcel_coupons" || true
           echo "页面大小：$(wc -c < _site/index.html 2>/dev/null || echo 0) 字节"
 
       - name: 检查页面确实可用

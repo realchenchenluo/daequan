@@ -45,6 +45,11 @@ HELP = """
   状态                     看当前登录状态
   退出                     删除本地保存的登录凭证
 
+麦当劳官方券（全项目唯一的官方接口，Token 免费）：
+  麦当劳                   连一下官方服务，看能领到什么券（诊断用）
+  麦当劳 --工具            列出官方开放的 24 个工具
+  麦当劳 --调用 <工具名>    调指定的工具看原始返回
+
 让它自己跑（都在你主动执行时才生效，程序不会擅自改动系统）：
   定时任务 --安装           装一个每天 09:00 自动抓券的任务
   定时任务 --安装 --时间 08:30   换时间
@@ -78,6 +83,9 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
         "卸载": False,
         "状态": False,
         "时间": None,
+        "令牌": None,
+        "工具": False,
+        "调用": None,
         "端口": None,
         "仅本机": False,
         "打开": False,
@@ -144,6 +152,15 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
             i += 1
         elif a in ("-o", "--输出", "--out"):
             opts["输出"] = nxt
+            i += 2
+        elif a in ("--令牌", "--token"):
+            opts["令牌"] = nxt
+            i += 2
+        elif a in ("--工具", "--tools"):
+            opts["工具"] = True
+            i += 1
+        elif a in ("--调用", "--call"):
+            opts["调用"] = nxt
             i += 2
         else:
             i += 1
@@ -451,6 +468,102 @@ def cmd_serve(opts: dict) -> int:
     )
 
 
+def cmd_mcd(opts: dict) -> int:
+    """麦当劳官方 MCP 的诊断工具。
+
+    为什么单独做一个命令：这个源需要 Token，我没法替你测。
+    所以给你一个「一键把服务端原话打出来」的工具——
+    跑完把输出发我，我就能照着真实结构把解析改对。
+    """
+    import os
+
+    from .config import load_config
+    from .mcp_client import McpClient, McpError, tool_result_json, tool_result_text
+
+    print()
+    token = (opts.get("令牌") or "").strip()
+    if not token:
+        for s in load_config().get("sources", []):
+            if s.get("type") == "mcd_mcp":
+                token = (s.get("token") or "").strip()
+                break
+    if not token:
+        token = (os.environ.get("MCD_MCP_TOKEN") or "").strip()
+
+    if not token:
+        print("  ⚠️ 还没配置麦当劳 MCP Token。")
+        print()
+        print("  这个源是麦当劳中国自己开放的官方接口，Token 免费：")
+        print("    1. 打开 https://open.mcd.cn/mcp")
+        print("    2. 右上角登录（手机号验证码）")
+        print("    3. 点「控制台」→「激活」→ 同意协议 → 复制 Token")
+        print('    4. 填进 config.json 里 mcd_official 那条的 "token"')
+        print()
+        print("  填好后运行：python run.py 麦当劳        看能领到什么券")
+        print("             python run.py 麦当劳 --工具   列出全部 24 个工具")
+        print()
+        return 1
+
+    client = McpClient(token=token)
+    print("  1) 握手……")
+    try:
+        info = client.initialize()
+    except McpError as e:
+        print(f"     ❌ {e.message}")
+        print()
+        return 1
+    srv = (info or {}).get("serverInfo", {}) or {}
+    print(f"     ✅ 连上了：{srv.get('name', '?')} v{srv.get('version', '?')}")
+    if client.session_id:
+        print(f"     会话 ID：{client.session_id[:16]}…")
+
+    print()
+    print("  2) 列出工具……")
+    try:
+        tools = client.list_tools()
+    except McpError as e:
+        print(f"     ❌ {e.message}")
+        return 1
+    names = [t.get("name") for t in tools if isinstance(t, dict)]
+    print(f"     共 {len(names)} 个：{', '.join(names[:12])}{' …' if len(names) > 12 else ''}")
+
+    if opts.get("工具"):
+        print()
+        print("  完整的工具清单：")
+        for t in tools:
+            if isinstance(t, dict):
+                print(f"     · {t.get('name')}  {(t.get('description') or '')[:60]}")
+        print()
+        return 0
+
+    tool = opts.get("调用") or "available-coupons"
+    print()
+    print(f"  3) 调用 {tool}……")
+    try:
+        raw = client.call_tool(tool, {})
+    except McpError as e:
+        print(f"     ❌ {e.message}")
+        return 1
+
+    text = tool_result_text(raw)
+    parsed = tool_result_json(raw)
+    print(f"     原始返回长度：{len(text)} 字符")
+    print()
+    print("  ── 服务端原始返回（前 1500 字符）──")
+    print("  " + (text[:1500] or "(空)").replace("\n", "\n  "))
+    print("  ── 结束 ──")
+    if parsed is not None:
+        import json as _json
+
+        print()
+        print("  解析出的 JSON 结构（前 800 字符）：")
+        print("  " + _json.dumps(parsed, ensure_ascii=False, indent=1)[:800].replace("\n", "\n  "))
+    print()
+    print("  如果「优惠券」没显示出来，把上面这段原始返回发我，我照着改解析。")
+    print()
+    return 0
+
+
 def cmd_menu(sources: list[dict]) -> int:
     """双击 .bat 时进来的交互菜单。
 
@@ -471,6 +584,7 @@ def cmd_menu(sources: list[dict]) -> int:
         "11": ("让电脑每天自动抓一次（装定时任务）", lambda: cmd_schedule(_default_opts())),
         "12": ("在桌面放快捷方式", cmd_shortcuts),
         "13": ("启动本地网站（手机也能打开，Ctrl+C 停止）", lambda: cmd_serve(_default_opts())),
+        "14": ("麦当劳官方券诊断", lambda: cmd_mcd(_default_opts())),
     }
 
     while True:
@@ -485,7 +599,7 @@ def cmd_menu(sources: list[dict]) -> int:
         for key in ("5", "6", "7", "8"):
             print(f"    {key:>2}.  {actions[key][0]}")
         print()
-        for key in ("9", "10", "11", "12", "13"):
+        for key in ("9", "10", "11", "12", "13", "14"):
             print(f"    {key:>2}.  {actions[key][0]}")
         print()
         print("     0.  退出")
@@ -523,6 +637,7 @@ def _default_opts(**kwargs) -> dict:
         "平台": None, "关键词": None, "前": 15, "全部": False,
         "json": None, "网页": False, "只大额": False, "源": None, "复制": False,
         "卸载": False, "状态": False, "时间": None,
+        "令牌": None, "工具": False, "调用": None,
     }
     opts.update(kwargs)
     return opts
@@ -539,6 +654,7 @@ _COMMANDS = {
     "定时任务": "schedule", "定时": "schedule", "schedule": "schedule",
     "快捷方式": "shortcut", "shortcut": "shortcut",
     "服务": "serve", "网页服务": "serve", "serve": "serve",
+    "麦当劳": "mcd", "mcd": "mcd", "麦当劳诊断": "mcd",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
     # 供定时任务调用，不写历史、只刷新网页
@@ -591,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_shortcuts()
     if cmd == "serve":
         return cmd_serve(opts)
+    if cmd == "mcd":
+        return cmd_mcd(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":
