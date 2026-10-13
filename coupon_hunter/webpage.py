@@ -69,7 +69,7 @@ def _card(c: Coupon, idx: int) -> str:
         # data-code 用 html.escape(quote=True) 单独转义，避免中文引号破坏属性
         code_block = f"""
         <div class="code-row">
-          <code class="code-text" data-code="{html.escape(c.code, quote=True)}">{code}</code>
+          <code class="code-text" data-code="{html.escape(c.code, quote=True)}" title="点一下复制">{code}</code>
           <button class="copy-btn" type="button">复制</button>
         </div>"""
 
@@ -219,17 +219,20 @@ def render(
   .chip {{
     flex:none; background: var(--card); color: var(--dim);
     border:1px solid var(--line); border-radius: 999px;
-    padding: 8px 15px; font-size: 13.5px; font-weight:600;
-    min-height: 38px; cursor:pointer; white-space:nowrap;
+    padding: 9px 15px; font-size: 13.5px; font-weight:600;
+    min-height: 42px; cursor:pointer; white-space:nowrap;
   }}
   .chip.on {{ background: var(--text); color: var(--bg); border-color: var(--text); }}
 
   main {{ max-width: 860px; margin: 0 auto; padding: 16px 16px 0; }}
 
   .card {{
+    /* 吸顶的筛选栏会盖住滚到顶部的内容（浏览器「查找」跳转、锚点跳转、
+       以及自动化工具自动滚动时都会撞上），这里留出上边距 */
+    scroll-margin-top: 140px;
     display:flex; gap:12px;
     background: var(--card); border:1px solid var(--line);
-    border-radius: 16px; padding: 15px; margin-bottom: 12px;
+    border-radius: 16px; padding: 14px; margin-bottom: 11px;
   }}
   .card[hidden] {{ display:none; }}
   .rank {{ color: var(--dim); font-weight:700; font-size:14px; min-width:26px; padding-top:2px; }}
@@ -243,19 +246,26 @@ def render(
   .plat, .valid {{ color: var(--dim); }}
   .discount {{ color: var(--accent); font-weight:700; }}
 
-  /* ── 口令：手机上换行显示 + 右侧大按钮 ── */
-  .code-row {{ display:flex; gap:8px; align-items:stretch; margin: 10px 0 4px; }}
+  /* ── 口令 ──
+     手机（<560px）会切成上下两块：口令占满整行、复制按钮通栏。
+     原因：并排时口令框只有 211px 宽，长口令要挤成 4 行小字；按钮还会被
+     align-items:stretch 拉成 82px 高的窄条。通栏后口令框约 325px 宽、
+     少换两三行，按钮也变成正常高度的大按钮，拇指好点。
+     口令框本身也可以直接点一下复制（手机上比瞄准按钮快）。 */
+  .code-row {{ display:flex; gap:8px; align-items:stretch; flex-wrap:wrap; margin: 10px 0 4px; }}
   .code-text {{
     flex:1; min-width:0; background: var(--bg);
     border:1px dashed var(--line); border-radius: 10px;
-    padding: 11px 12px; font-size: 13px; line-height:1.5;
+    padding: 12px; font-size: 13.5px; line-height:1.5;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    word-break: break-all; overflow-wrap: anywhere;
-    -webkit-user-select: all; user-select: all;
+    /* 优先在空格/标点处断行（口令里的「淘宝闪购App」不会被劈成两半），
+       只有单个超长片段放不下时才在词中间断开 */
+    overflow-wrap: anywhere;
+    -webkit-user-select: all; user-select: all; cursor: pointer;
   }}
   .copy-btn {{
-    flex:none; min-width: 74px; background: var(--blue); color:#fff;
-    border:none; border-radius: 10px; font-size: 14px; font-weight:700;
+    flex:none; min-width: 74px; min-height: 44px; background: var(--blue); color:#fff;
+    border:none; border-radius: 11px; font-size: 14.5px; font-weight:700;
     cursor:pointer; padding: 0 14px;
   }}
   .copy-btn:active {{ transform: scale(.96); }}
@@ -279,12 +289,18 @@ def render(
   }}
   .toast.on {{ opacity:1; transform: translateX(-50%) translateY(0); }}
 
+  /* 手机：口令通栏 + 复制按钮通栏 */
+  @media (max-width: 560px) {{
+    .code-row {{ flex-direction: column; gap: 9px; }}
+    .copy-btn {{ width: 100%; min-width: 0; min-height: 46px; font-size: 15px; border-radius: 12px; }}
+    .rank {{ min-width: 20px; font-size: 13px; }}
+  }}
+
   /* 窄屏再压一点留白，别浪费手机屏幕 */
   @media (max-width: 420px) {{
     .head-top, .chips, main {{ padding-left: 13px; padding-right: 13px; }}
     .card {{ padding: 13px; border-radius: 14px; }}
     .title {{ font-size: 15.5px; }}
-    .copy-btn {{ min-width: 64px; padding: 0 11px; }}
   }}
 </style>
 </head>
@@ -346,20 +362,27 @@ def render(
     t._timer = setTimeout(function () {{ t.classList.remove('on'); }}, 1500);
   }}
 
+  /* 点「复制」按钮、或者直接点口令框本身，都能复制。
+     手机上直接点口令更顺手（不用瞄准按钮）。 */
   document.addEventListener('click', function (ev) {{
-    var btn = ev.target.closest('.copy-btn');
-    if (!btn) return;
-    var codeEl = btn.parentElement.querySelector('.code-text');
+    var hit = ev.target.closest('.copy-btn, .code-text');
+    if (!hit) return;
+    var isBtn = hit.classList.contains('copy-btn');
+    var codeEl = isBtn ? hit.parentElement.querySelector('.code-text') : hit;
+    if (!codeEl) return;
+    var btn = isBtn ? hit : codeEl.parentElement.querySelector('.copy-btn');
     var text = codeEl.dataset.code;
 
     copyText(text).then(function () {{
-      btn.textContent = '已复制 ✓';
-      btn.classList.add('done');
+      if (btn) {{
+        btn.textContent = '已复制';
+        btn.classList.add('done');
+        setTimeout(function () {{
+          btn.textContent = '复制';
+          btn.classList.remove('done');
+        }}, 2000);
+      }}
       toast('已复制，去 App 粘贴');
-      setTimeout(function () {{
-        btn.textContent = '复制';
-        btn.classList.remove('done');
-      }}, 2000);
     }}).catch(function () {{
       // 复制不了就把文字选中，让用户长按手动复制
       var r = document.createRange();
