@@ -6,12 +6,25 @@ name: 更新优惠券页面
 
 on:
   schedule:
-    # ⚠️ GitHub Actions 的 cron 用的是 UTC 时间，不是北京时间。
-    # 下面这个写法 = 北京时间每天 07:00 和 19:00 各跑一次。
-    # 想改时间：北京时间 - 8 小时 = UTC。例如北京时间 09:00 → UTC 01:00 → '0 1 * * *'
-    - cron: '0 23,11 * * *'
+    # ⚠️ GitHub Actions 的 cron 用的是 UTC 时间，不是北京时间（北京时间 - 8 小时 = UTC）。
+    #
+    # 为什么是每 2 小时而不是每天两次：
+    #   GitHub 的定时任务【不准时】。实测计划 UTC 11:00 的那次，
+    #   实际拖到 UTC 20:00 才执行——晚了 9 个小时。高峰期延迟是常态。
+    #   所以改成每 2 小时跑一次：跑得勤，总有一次落在他需要的时段附近，
+    #   页面最大陈旧度也就 2-3 小时，而不是"运气不好就 20 小时"。
+    #   公开仓库跑 Actions 不花钱，12 次/天的调用量对免费接口也很温和。
+    - cron: '0 */2 * * *'
   # 允许在网页上手动点一次「Run workflow」立即刷新
   workflow_dispatch:
+  # 代码或配置有改动时立刻重新部署，不用等定时
+  push:
+    branches: [main]
+    paths:
+      - 'coupon_hunter/**'
+      - 'run.py'
+      - 'config.json'
+      - '.github/workflows/update-coupons.yml'
 
 # 发布到 Pages 所需的权限，多一个都不给
 permissions:

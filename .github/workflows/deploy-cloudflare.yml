@@ -6,8 +6,8 @@ name: 同步到 Cloudflare Pages
 
 on:
   schedule:
-    # 和 GitHub Pages 那个工作流同一时间跑，两个站点内容保持一致
-    - cron: '0 23,11 * * *'
+    # 和 GitHub Pages 那个工作流保持同一频率，两个站点内容一致
+    - cron: '0 */2 * * *'
   workflow_dispatch:
   push:
     branches: [main]
