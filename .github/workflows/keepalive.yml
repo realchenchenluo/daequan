@@ -1,0 +1,122 @@
+name: 保活（防止定时任务被 GitHub 暂停）
+
+# ─────────────────────────────────────────────────────────────
+# 为什么需要这个？
+#
+# GitHub 有一条规则：仓库连续 60 天没有任何提交，所有【定时】工作流会被
+# 自动暂停。注意两点容易踩坑的：
+#   1. 定时任务自己执行【不算】仓库活动，只有提交才算；
+#   2. 暂停是静默的，不会通知你，表现是「页面突然不更新了」。
+#
+# 所以这里做两层保险：
+#   第一层：距离上次提交超过 25 天，就自动提交一个标记文件，把计时器清零。
+#           正常情况下大约每月产生 1 次提交，噪音很小。
+#   第二层：顺便检查各个工作流有没有被停用，被停了就重新启用。
+#
+# 只在【真的需要】时才动作，平时这个工作流什么都不会改。
+# ─────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # 每天 UTC 03:00（北京时间 11:00）检查一次
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '强制保活一次（用于验证机制是否正常，平时不用勾）'
+        type: boolean
+        default: false
+
+# 要提交文件、还要能改工作流状态，所以需要写权限
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 需要完整历史才能查到上一次提交的时间
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: 算一下距上次提交过了多少天
+        id: days
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          LAST=$(git log -1 --format=%ct)
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - LAST) / 86400 ))
+          echo "距上次提交：${DAYS} 天"
+          echo "days=$DAYS" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" = "true" ]; then
+            echo "need=true" >> "$GITHUB_OUTPUT"
+            echo "→ 手动勾了「强制保活」，本次必定执行"
+          elif [ "$DAYS" -ge 25 ]; then
+            echo "need=true" >> "$GITHUB_OUTPUT"
+            echo "→ 超过 25 天没提交，本次需要保活"
+          else
+            echo "need=false" >> "$GITHUB_OUTPUT"
+            echo "→ 仓库还活着（阈值 25 天，GitHub 的暂停线是 60 天），本次不动任何东西"
+          fi
+
+      - name: 提交保活标记（把 60 天计时器清零）
+        if: steps.days.outputs.need == 'true'
+        run: |
+          # 用 echo 而不是 heredoc：YAML 块标量会给内容加缩进，
+          # heredoc 写出来的文件会带一堆前导空格。
+          {
+            echo "# 这个文件由「保活」工作流自动刷新，请勿手动删除。"
+            echo "#"
+            echo "# 存在的理由："
+            echo "#   GitHub 会在仓库连续 60 天没有提交时，自动暂停所有定时工作流。"
+            echo "#   定时任务自己执行不算仓库活动，只有提交才算。"
+            echo "#   本文件在上次提交超过 25 天时会被重写一次，以此维持仓库活跃，"
+            echo "#   保证「更新优惠券页面」能一直按点跑。"
+            echo "#"
+            echo "# 想彻底不要它：删掉 .github/workflows/keepalive.yml 即可，"
+            echo "# 但那样定时更新会在 60 天后被 GitHub 静默暂停。"
+            echo "最后刷新: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          } > .github/keepalive.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          git commit -m "保活：刷新计时器，避免定时任务被 GitHub 暂停"
+          git push
+
+      - name: 检查有没有工作流被暂停，被停了就重新启用
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # 这一层是兜底：正常情况下靠上面的提交就够了。
+          # 但如果某个工作流确实被停用了（比如 60 天规则已经生效过），
+          # 这里能把它拉回来，不用你手动去点。
+          gh api "repos/$REPO/actions/workflows" \
+            --jq '.workflows[] | "\(.id) \(.state) \(.name)"' > /tmp/wf.txt
+          echo "当前工作流状态："
+          cat /tmp/wf.txt | sed 's/^/  /'
+
+          FIXED=0
+          while read -r id state name; do
+            if [ "$state" != "active" ]; then
+              echo "→ 「$name」状态是 $state，重新启用"
+              gh api -X PUT "repos/$REPO/actions/workflows/$id/enable" || true
+              FIXED=$((FIXED + 1))
+            fi
+          done < /tmp/wf.txt
+
+          if [ "$FIXED" -eq 0 ]; then
+            echo "✅ 所有工作流都是启用状态"
+          else
+            echo "✅ 已重新启用 $FIXED 个工作流"
+          fi
