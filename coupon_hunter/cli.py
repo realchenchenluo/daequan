@@ -45,6 +45,12 @@ HELP = """
   状态                     看当前登录状态
   退出                     删除本地保存的登录凭证
 
+算账（不用联网，不读任何券源）：
+  叠券                      算「叠完所有券之后实际付多少」，会告诉你每步怎么减的
+  叠券 --价 399 --平台 京东 --券 "满减,300,50" --券 "折扣,0.9" --plus
+                            一次性算，不进交互
+  比价                      同一件商品在几个平台的到手价对比，排出最便宜的那个
+
 麦当劳官方券（全项目唯一的官方接口，Token 免费）：
   麦当劳                   连一下官方服务，看能领到什么券（诊断用）
   麦当劳 --工具            列出官方开放的 24 个工具
@@ -86,6 +92,12 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
         "令牌": None,
         "工具": False,
         "调用": None,
+        "价": None,
+        "券": [],
+        "方案": [],
+        "plus": False,
+        "名": None,
+        "方案": None,
         "端口": None,
         "仅本机": False,
         "打开": False,
@@ -161,6 +173,30 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
             i += 1
         elif a in ("--调用", "--call"):
             opts["调用"] = nxt
+            i += 2
+        elif a in ("--价", "--price"):
+            try:
+                opts["价"] = float(nxt)
+            except (TypeError, ValueError):
+                pass
+            i += 2
+        elif a in ("--券", "--coupon"):
+            # 可重复传：--券 "满减,300,50" --券 "折扣,0.9"
+            if not isinstance(opts.get("券"), list):
+                opts["券"] = []
+            opts["券"].append(nxt)
+            i += 2
+        elif a in ("--plus", "--会员"):
+            opts["plus"] = True
+            i += 1
+        elif a in ("--名", "--name"):
+            opts["名"] = nxt
+            i += 2
+        elif a in ("--方案", "--plan"):
+            # 比价用：--方案 "京东|399|满减,300,50;折扣,0.9"
+            if not isinstance(opts.get("方案"), list):
+                opts["方案"] = []
+            opts["方案"].append(nxt)
             i += 2
         else:
             i += 1
@@ -564,6 +600,211 @@ def cmd_mcd(opts: dict) -> int:
     return 0
 
 
+
+def _read_coupons_interactive() -> list:
+    """交互式让用户逐张录券，空行结束。"""
+    from .stack_cli import SpecError, parse_coupon
+
+    print("  逐张输入券，直接回车结束。格式：")
+    print("      满减,300,50      → 满 300 减 50")
+    print("      折扣,0.9         → 9 折券（写「付多少比例」，9 折就写 0.9）")
+    print("      无门槛,20        → 直接减 20")
+    print("      补贴,0.15        → 按 15% 补贴（国补）")
+    print("      会员,500,30      → 会员满减（需要 Plus）")
+    print("      想指定互斥组就在后面再加一段：满减,300,50,店铺券")
+    print()
+    coupons = []
+    while True:
+        try:
+            raw = input(f"  第 {len(coupons) + 1} 张（回车结束）：").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not raw:
+            break
+        try:
+            c = parse_coupon(raw)
+            coupons.append(c)
+            print(f"      ✓ 已添加：{c.name}")
+        except SpecError as e:
+            print(f"      ✗ {e}")
+    return coupons
+
+
+def cmd_stack(opts: dict) -> int:
+    """叠券计算器：算「叠完所有券之后实际付多少」。"""
+    from .stack_cli import (
+        SpecError, best, parse_coupon_list, render_result, render_topup,
+        resolve_platform, suggest_topup,
+    )
+
+    print()
+
+    price = opts.get("价")
+    specs = opts.get("券") or []
+
+    if price is None:
+        try:
+            raw = input("  商品标价：").strip().lstrip("¥￥")
+            price = float(raw)
+        except (ValueError, EOFError, KeyboardInterrupt):
+            print("  没填价格，已取消。")
+            return 1
+
+    platform = resolve_platform(opts.get("平台") or "")
+    if not opts.get("平台"):
+        try:
+            raw = input(f"  平台（京东/拼多多/淘宝/通用，回车={platform}）：").strip()
+            if raw:
+                platform = resolve_platform(raw)
+        except (EOFError, KeyboardInterrupt):
+            print()
+
+    has = set()
+    if opts.get("plus"):
+        has.add("plus")
+    elif not specs:
+        try:
+            raw = input("  你是京东 Plus 会员吗？(y/N)：").strip().lower()
+            if raw in ("y", "yes", "是", "有"):
+                has.add("plus")
+        except (EOFError, KeyboardInterrupt):
+            print()
+
+    if specs:
+        try:
+            coupons = parse_coupon_list(specs)
+        except SpecError as e:
+            print(f"  ✗ {e}")
+            return 1
+    else:
+        print()
+        coupons = _read_coupons_interactive()
+
+    if not coupons:
+        print()
+        print("  没有券，那实付就是标价本身。")
+        print()
+        return 0
+
+    res = best(price, coupons, platform, has)
+    print()
+    print("  " + "─" * 58)
+    print(render_result(res))
+    tips = suggest_topup(price, coupons, has)
+    if tips:
+        print(render_topup(tips))
+    print()
+    return 0
+
+
+def _parse_plan(spec: str):
+    """解析 "京东|399|满减,300,50;折扣,0.9" 这种一行描述。"""
+    from .stack_cli import SpecError, parse_coupon_list, resolve_platform
+
+    parts = str(spec).split("|")
+    if len(parts) < 2:
+        raise SpecError(f"「{spec}」格式不对，应该是 平台|标价|券1;券2")
+    platform = resolve_platform(parts[0])
+    try:
+        price = float(parts[1])
+    except ValueError as e:
+        raise SpecError(f"「{parts[1]}」不是有效价格") from e
+    specs = [x for x in (parts[2].split(";") if len(parts) > 2 else []) if x.strip()]
+    return platform, price, parse_coupon_list(specs)
+
+
+def cmd_compare(opts: dict) -> int:
+    """比价：同一件商品在几个平台的到手价对比。
+
+    说清楚它做什么、不做什么：
+      做的是「你知道各平台标价，帮你算叠完券之后哪个最便宜」。
+      **不做**「自动去淘宝/京东/拼多多搜出同一件商品再比」——那需要抓平台页面
+      或者拿到所有平台的商品接口，前者不可靠、违反平台规则，后者拿不到。
+      而且同一件商品在不同平台标题和 ID 完全不同，自动匹配本身就是个难题。
+    """
+    from .stack_cli import SpecError, best, render_result, resolve_platform
+
+    print()
+
+    plans = opts.get("方案") or []
+
+    if not plans:
+        # 交互式：逐行录「平台|标价|券」
+        name = ""
+        try:
+            name = input("  商品名（可留空）：").strip()
+        except (EOFError, KeyboardInterrupt):
+            pass
+        print()
+        print("  逐个平台录一行，格式：平台|标价|券1;券2")
+        print("  例如：京东|399|满减,300,50;折扣,0.9")
+        print("  没有券就只写「拼多多|359」。直接回车结束。")
+        print()
+        while True:
+            try:
+                raw = input(f"  第 {len(plans) + 1} 个平台（回车结束）：").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not raw:
+                break
+            plans.append(raw)
+        if name:
+            opts["名"] = name
+
+    if len(plans) < 2:
+        print()
+        print("  至少要录两个平台才能比。")
+        print()
+        return 1
+
+    results = []
+    for spec in plans:
+        try:
+            platform, price, coupons = _parse_plan(spec)
+        except SpecError as e:
+            print(f"  ✗ {e}")
+            return 1
+        has = {"plus"} if opts.get("plus") else set()
+        results.append((platform, price, best(price, coupons, platform, has)))
+
+    # 按到手价排序
+    results.sort(key=lambda x: x[2].final_price)
+
+    name = opts.get("名") or "这件商品"
+    print()
+    print("  " + "═" * 58)
+    print(f"  {name} · 各平台到手价对比")
+    print("  " + "═" * 58)
+    print()
+    print("    排名  平台           标价        到手价      省")
+    print("    " + "─" * 52)
+    for i, (platform, price, res) in enumerate(results, 1):
+        mark = " ←最便宜" if i == 1 else ""
+        print(f"     {i}    {platform:<12} {price:>9.2f}  {res.final_price:>10.2f}"
+              f"  {res.total_saved:>7.2f}{mark}")
+
+    if len(results) >= 2:
+        gap = results[-1][2].final_price - results[0][2].final_price
+        print()
+        if gap > 0.01:
+            print(f"    最便宜比最贵省 {gap:.2f} 元（{gap / results[-1][2].final_price * 100:.1f}%）")
+        else:
+            print("    几个平台到手价一样。")
+
+    print()
+    print("  " + "─" * 58)
+    for platform, price, res in results:
+        print()
+        print(render_result(res, title=f"{platform}（标价 {price:.2f}）"))
+    print()
+    print("  ⚠️ 以上都按各平台的公开叠加顺序估算，**以下单页结算时为准**。")
+    print("     券的可用性受账号资质、地区、时段影响，实际可能用不上。")
+    print()
+    return 0
+
+
 def cmd_menu(sources: list[dict]) -> int:
     """双击 .bat 时进来的交互菜单。
 
@@ -585,6 +826,8 @@ def cmd_menu(sources: list[dict]) -> int:
         "12": ("在桌面放快捷方式", cmd_shortcuts),
         "13": ("启动本地网站（手机也能打开，Ctrl+C 停止）", lambda: cmd_serve(_default_opts())),
         "14": ("麦当劳官方券诊断", lambda: cmd_mcd(_default_opts())),
+        "15": ("叠券算账（叠完之后实付多少）", lambda: cmd_stack(_default_opts())),
+        "16": ("多平台比价（哪个最便宜）", lambda: cmd_compare(_default_opts())),
     }
 
     while True:
@@ -599,7 +842,7 @@ def cmd_menu(sources: list[dict]) -> int:
         for key in ("5", "6", "7", "8"):
             print(f"    {key:>2}.  {actions[key][0]}")
         print()
-        for key in ("9", "10", "11", "12", "13", "14"):
+        for key in ("9", "10", "11", "12", "13", "14", "15", "16"):
             print(f"    {key:>2}.  {actions[key][0]}")
         print()
         print("     0.  退出")
@@ -638,6 +881,7 @@ def _default_opts(**kwargs) -> dict:
         "json": None, "网页": False, "只大额": False, "源": None, "复制": False,
         "卸载": False, "状态": False, "时间": None,
         "令牌": None, "工具": False, "调用": None,
+        "价": None, "券": [], "plus": False, "名": None, "方案": None,
     }
     opts.update(kwargs)
     return opts
@@ -655,6 +899,8 @@ _COMMANDS = {
     "快捷方式": "shortcut", "shortcut": "shortcut",
     "服务": "serve", "网页服务": "serve", "serve": "serve",
     "麦当劳": "mcd", "mcd": "mcd", "麦当劳诊断": "mcd",
+    "叠券": "stack", "凑单": "stack", "实付": "stack", "stack": "stack",
+    "比价": "compare", "compare": "compare",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
     # 供定时任务调用，不写历史、只刷新网页
@@ -709,6 +955,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_serve(opts)
     if cmd == "mcd":
         return cmd_mcd(opts)
+    if cmd == "stack":
+        return cmd_stack(opts)
+    if cmd == "compare":
+        return cmd_compare(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":
