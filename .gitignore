@@ -18,3 +18,9 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 我自己调试时产生的临时文件（前面误提交过，加规则防复发）
+_live.html
+_l.html
+_msg*.txt
+_probe/
