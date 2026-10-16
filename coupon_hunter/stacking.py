@@ -138,6 +138,18 @@ PLATFORM_RULES: dict[str, dict] = {
             "**务必以下单页结算时显示为准**，本结果只能当参考。",
         ],
     },
+    "外卖": {
+        "order": ["店铺券", "平台券", "会员满减", "红包"],
+        "desc": "门店满减 → 平台券 → 会员券 → 红包（门槛按菜品小计）",
+        "sources": "**无权威来源**。外卖各平台的满减基数、券的叠加方式没有公开文档，"
+                   "这里按外卖行业最常见的做法处理",
+        "confidence": "低",
+        "notes": [
+            "满减门槛按「菜品小计」判定，不含配送费和打包费——这是常见做法，"
+            "但各平台未必一致。",
+            "配送费和打包费一般不打折，所以在本工具里是最后才加上的。",
+        ],
+    },
     "通用": {
         "order": ["店铺券", "平台券", "红包"],
         "desc": "店铺券 → 平台券 → 红包（无平台特定信息时的通用顺序）",
@@ -209,6 +221,7 @@ def _apply_order(
     coupons: list[Coupon],
     has: set[str],
     order: list[str],
+    threshold_base: str = "running",
 ) -> Result:
     """按给定顺序把券依次作用到价格上。
 
@@ -225,16 +238,23 @@ def _apply_order(
     #   会被重置回原价，实测踩到过。）
     current = round(price, 2)
 
+    # 门槛按哪个数判：
+    #   "running" —— 按当前价（前一张券减完之后的），商品券一般是这样
+    #   "base"    —— 按最初的价格，外卖平台券通常是这样
+    # 这个区别会直接改变结果，所以做成显式参数而不是拍脑袋定死。
+    base = round(price, 2)
+
     for category in order:
+        ref = base if threshold_base == "base" else current
         # 找出这一类别下现在可用的券
         candidates = [
             c for c in remaining
-            if c.exclusive_group == category and c.name not in used_names and c.usable_at(current, has)
+            if c.exclusive_group == category and c.name not in used_names and c.usable_at(ref, has)
         ]
         if not candidates:
             continue
         # 同类互斥：只用省得最多的那张
-        best_c = max(candidates, key=lambda c: c.saving_at(current, has))
+        best_c = max(candidates, key=lambda c: c.saving_at(ref, has))
         before = current
         after = max(best_c.apply(before), 0.0)   # 不可能付负数，兜到 0
         res.steps.append(Step(best_c.name, before, after))
@@ -251,10 +271,12 @@ def _apply_order(
             continue
         if c.requires and c.requires not in has:
             res.unused.append(f"{c.name}（需要「{c.requires}」资质，你没有）")
-        elif c.kind in ("满减", "会员") and current_final < c.threshold:
+        elif c.kind in ("满减", "会员") and (base if threshold_base == "base" else current_final) < c.threshold:
+            ref_val = base if threshold_base == "base" else current_final
             res.unused.append(
-                f"{c.name}（要满 {c.threshold:g}，算到最后只有 {current_final:.2f}，差 "
-                f"{c.threshold - current_final:.2f}）"
+                f"{c.name}（要满 {c.threshold:g}，"
+                f"{'标价' if threshold_base == 'base' else '算到最后'}只有 {ref_val:.2f}，差 "
+                f"{c.threshold - ref_val:.2f}）"
             )
         elif c.exclusive_group not in order:
             res.unused.append(f"{c.name}（这个平台的规则里没有「{c.exclusive_group}」这一类）")
@@ -274,6 +296,7 @@ def best(
     coupons: list[Coupon],
     platform: str = "通用",
     has: set[str] | None = None,
+    threshold_base: str = "running",
 ) -> Result:
     """算出下单时的实际到手价，另外给出「顺序可调时」的理论最低价。
 
@@ -295,7 +318,7 @@ def best(
     unknown = sorted(present - set(base_order))
     full_order = base_order + unknown
 
-    baseline = _apply_order(price, coupons, has, full_order)
+    baseline = _apply_order(price, coupons, has, full_order, threshold_base)
 
     # 平台规定顺序的结果作为主结果
     baseline.platform = platform
@@ -308,7 +331,8 @@ def best(
     optimized = baseline.final_price
     if 1 < len(effective) <= MAX_PERMUTE:
         results = [
-            _apply_order(price, coupons, has, list(perm)) for perm in itertools.permutations(effective)
+            _apply_order(price, coupons, has, list(perm), threshold_base)
+            for perm in itertools.permutations(effective)
         ]
         optimized = min(r.final_price for r in results)
 

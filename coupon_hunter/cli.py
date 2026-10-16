@@ -50,6 +50,7 @@ HELP = """
   叠券 --价 399 --平台 京东 --券 "满减,300,50" --券 "折扣,0.9" --plus
                             一次性算，不进交互
   比价                      同一件商品在几个平台的到手价对比，排出最便宜的那个
+  外卖比价                  同一家外卖在美团/饿了么/京东，算上券和配送费谁最便宜
 
 麦当劳官方券（全项目唯一的官方接口，Token 免费）：
   麦当劳                   连一下官方服务，看能领到什么券（诊断用）
@@ -805,6 +806,181 @@ def cmd_compare(opts: dict) -> int:
     return 0
 
 
+
+def _ask_float(prompt: str, default: float = 0.0) -> float:
+    """问一个数字，空输入就用默认值。"""
+    try:
+        raw = input(prompt).strip().lstrip("¥￥")
+    except (EOFError, KeyboardInterrupt):
+        return default
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"      「{raw}」不是数字，按 {default:g} 算")
+        return default
+
+
+def _parse_discount_list(raw: str, group: str) -> list:
+    """解析 "40,8;60,15" 这种满减列表。"""
+    from .stacking import Coupon
+
+    out = []
+    for seg in str(raw).split(";"):
+        seg = seg.strip()
+        if not seg:
+            continue
+        nums = [x.strip() for x in seg.replace("减", ",").replace("-", ",").split(",") if x.strip()]
+        try:
+            if len(nums) >= 2:
+                thr, val = float(nums[0]), float(nums[1])
+                out.append(Coupon(f"满{thr:g}减{val:g}", "满减", thr, val, group))
+            elif len(nums) == 1:
+                val = float(nums[0])
+                out.append(Coupon(f"减{val:g}", "无门槛", 0, val, group))
+        except ValueError:
+            print(f"      「{seg}」看不懂，已跳过")
+    return out
+
+
+def _ask_platform_offer(platform: str):
+    """交互式问一个平台的数字，返回 Offer 或 None（跳过）。"""
+    from .delivery import Offer
+    from .stacking import Coupon
+
+    print()
+    print(f"  ── {platform} ──")
+    print("     （照着外卖 App 的结账页填；不知道的直接回车跳过）")
+
+    items = _ask_float("      菜品小计（优惠前）：", -1)
+    if items < 0:
+        print("      跳过这个平台")
+        return None
+    if items == 0:
+        print("      菜品是 0，跳过这个平台")
+        return None
+
+    delivery = _ask_float("      配送费：", 0.0)
+    packing = _ask_float("      打包费：", 0.0)
+
+    try:
+        raw = input("      门店满减（如 40,8 表示满40减8；多张用分号；没有回车）：").strip()
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    shop = _parse_discount_list(raw, "店铺券")
+
+    try:
+        raw = input("      平台券（格式 门槛,面额；多张用分号；没有回车）：").strip()
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    coupons = _parse_discount_list(raw, "平台券")
+
+    red = _ask_float("      红包（直接减多少，没有填 0）：", 0.0)
+
+    member = False
+    free_delivery = False
+    try:
+        if input("      有会员吗？(y/N)：").strip().lower() in ("y", "yes", "是", "有"):
+            member = True
+            if input("        会员免配送费吗？(y/N)：").strip().lower() in ("y", "yes", "是", "有"):
+                free_delivery = True
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+    return Offer(platform, items, delivery, packing, shop, coupons, red,
+                 member=member, member_delivery_free=free_delivery)
+
+
+def _parse_offer_spec(spec: str):
+    """解析 "美团|45|3|1|40,8;60,15|50,6|5|n" 这种一行描述。"""
+    from .delivery import Offer
+
+    parts = [x.strip() for x in str(spec).split("|")]
+    if len(parts) < 2:
+        raise ValueError(f"「{spec}」格式不对，至少要有 平台|菜品小计")
+
+    def num(i, default=0.0):
+        if i >= len(parts) or not parts[i]:
+            return default
+        return float(parts[i])
+
+    shop = _parse_discount_list(parts[4], "店铺券") if len(parts) > 4 else []
+    coupons = _parse_discount_list(parts[5], "平台券") if len(parts) > 5 else []
+    red = num(6)
+    member = len(parts) > 7 and parts[7].lower() in ("y", "yes", "会员", "1")
+    return Offer(parts[0], float(parts[1]), num(2), num(3), shop, coupons, red,
+                 member=member, member_delivery_free=member)
+
+
+def cmd_delivery(opts: dict) -> int:
+    """外卖比价：同一家店在美团/淘宝闪购/京东外卖，算上券和配送费谁最便宜。
+
+    说清楚它做什么、不做什么：
+      做的是「你照着各平台结账页把数字填进来，算完券和配送费之后哪个真便宜」。
+      **不做**「自动去各平台抓菜品价格」——实测过，三个平台的页面都是纯 JS
+      渲染的应用外壳，HTML 里没有任何菜单或价格，而且都要登录。抓不到。
+    """
+    from .delivery import Offer, compare, parse_share_text, render_comparison
+
+    print()
+
+    shop = ""
+    specs = opts.get("方案") or []
+
+    if not specs:
+        print("  把餐厅的分享文本或链接粘进来（用来记店名，可以直接回车跳过）：")
+        try:
+            raw = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raw = ""
+        if raw:
+            shop, url = parse_share_text(raw)
+            if shop:
+                print(f"      ✓ 认出店名：{shop}")
+            elif url:
+                print("      （只认出链接，没认出店名）")
+            if not shop:
+                try:
+                    shop = input("      店名是什么？（可回车跳过）：").strip()
+                except (EOFError, KeyboardInterrupt):
+                    shop = ""
+
+        print()
+        print("  现在逐个平台填数字。三个平台随便填几个，填几个比几个。")
+        print("  顺序建议：美团 → 淘宝闪购(饿了么) → 京东外卖")
+        offers = []
+        for platform in ("美团", "淘宝闪购(饿了么)", "京东外卖"):
+            o = _ask_platform_offer(platform)
+            if o:
+                offers.append(o)
+    else:
+        offers = []
+        for spec in specs:
+            try:
+                offers.append(_parse_offer_spec(spec))
+            except ValueError as e:
+                print(f"  ✗ {e}")
+                return 1
+        shop = opts.get("名") or ""
+
+    if len(offers) < 1:
+        print()
+        print("  一个平台都没填，没法比。")
+        print()
+        return 1
+
+    if len(offers) == 1:
+        print()
+        print("  只填了一个平台，没法横向比，但可以给你算到手价：")
+
+    results = compare(offers)
+    print()
+    print(render_comparison(results, shop))
+    print()
+    return 0
+
+
 def cmd_menu(sources: list[dict]) -> int:
     """双击 .bat 时进来的交互菜单。
 
@@ -828,6 +1004,7 @@ def cmd_menu(sources: list[dict]) -> int:
         "14": ("麦当劳官方券诊断", lambda: cmd_mcd(_default_opts())),
         "15": ("叠券算账（叠完之后实付多少）", lambda: cmd_stack(_default_opts())),
         "16": ("多平台比价（哪个最便宜）", lambda: cmd_compare(_default_opts())),
+        "17": ("外卖比价（同一家店哪个平台便宜）", lambda: cmd_delivery(_default_opts())),
     }
 
     while True:
@@ -842,7 +1019,7 @@ def cmd_menu(sources: list[dict]) -> int:
         for key in ("5", "6", "7", "8"):
             print(f"    {key:>2}.  {actions[key][0]}")
         print()
-        for key in ("9", "10", "11", "12", "13", "14", "15", "16"):
+        for key in ("9", "10", "11", "12", "13", "14", "15", "16", "17"):
             print(f"    {key:>2}.  {actions[key][0]}")
         print()
         print("     0.  退出")
@@ -900,6 +1077,7 @@ _COMMANDS = {
     "服务": "serve", "网页服务": "serve", "serve": "serve",
     "麦当劳": "mcd", "mcd": "mcd", "麦当劳诊断": "mcd",
     "叠券": "stack", "凑单": "stack", "实付": "stack", "stack": "stack",
+    "外卖比价": "delivery", "外卖": "delivery", "点外卖": "delivery", "delivery": "delivery",
     "比价": "compare", "compare": "compare",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
@@ -959,6 +1137,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stack(opts)
     if cmd == "compare":
         return cmd_compare(opts)
+    if cmd == "delivery":
+        return cmd_delivery(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":
