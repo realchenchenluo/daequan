@@ -20,6 +20,7 @@ from coupon_hunter.delivery import (  # noqa: E402
     Offer,
     compare,
     compute,
+    parse_checkout_text,
     parse_share_text,
 )
 from coupon_hunter.stacking import Coupon  # noqa: E402
@@ -128,6 +129,75 @@ def _():
     _name, url = parse_share_text("【某店】https://i.meituan.com/awp/abc123")
     assert url == "https://i.meituan.com/awp/abc123", url
 
+
+
+@case("从结账页文本里认数字")
+def _():
+    text = """商品小计 ¥45.00
+配送费 ¥3.00
+包装费 ¥1.00
+店铺满减 -¥8.00
+红包 -¥5.00
+实付 ¥36.00"""
+    r = parse_checkout_text(text)
+    assert r["items"] == 45.0, r
+    assert r["delivery"] == 3.0, r
+    assert r["packing"] == 1.0, r
+    assert r["shop_discount"] == 8.0, f"折扣要取正数：{r}"
+    assert r["red_packet"] == 5.0, r
+    assert r["final"] == 36.0, r
+
+
+@case("认数字：换个平台的说法也要认")
+def _():
+    r = parse_checkout_text("""菜品小计 ￥45.00
+餐盒费 ￥1.00
+配送费 ￥0.00
+店铺优惠 -￥10.00
+优惠券 -￥4.00
+实付 ￥32.00""")
+    assert r["items"] == 45.0, r
+    assert r["packing"] == 1.0, "「餐盒费」也是打包费"
+    assert r["shop_discount"] == 10.0, r
+    assert r["coupon"] == 4.0, r
+
+
+@case("认数字：多行同类金额要累加")
+def _():
+    r = parse_checkout_text("""商品小计 ¥60.00
+红包 -¥5.00
+红包 -¥3.00
+实付 ¥52.00""")
+    assert r["red_packet"] == 8.0, f"两个红包应累加成 8，实际 {r.get('red_packet')}"
+
+
+@case("认数字：认不出来就返回空，不能瞎填")
+def _():
+    assert parse_checkout_text("随便一段没有金额的话") == {}
+    assert parse_checkout_text("") == {}
+
+
+@case("实付核对：一致时确认")
+def _():
+    pre = parse_checkout_text("商品小计 45.00\n配送费 3.00\n包装费 1.00\n店铺满减 8.00\n红包 5.00\n实付 36.00")
+    o = Offer("美团", pre["items"], pre["delivery"], pre["packing"],
+              [_d("满45减8", 45, 8)], [], pre["red_packet"],
+              expected_final=pre["final"])
+    r = compute(o)
+    assert r.final_price == 36.0, r.final_price
+    assert any("一致" in n for n in r.notes), r.notes
+
+
+@case("实付核对：对不上时必须明确警告（这是最重要的一道保险）")
+def _():
+    # 平台规则和我们的假设不同时，算出来的价会和平台显示的实付不一致。
+    # 规则没有公开文档、我们是按常见做法假设的，所以必须把这个差异说出来，
+    # 而不是装作算准了。
+    o = Offer("某平台", items=50, delivery=4, packing=1,
+              shop_discounts=[_d("满50减5", 50, 5)], expected_final=40.0)
+    r = compute(o)
+    assert r.final_price != 40.0
+    assert any("对不上" in n and "以平台为准" in n for n in r.notes), r.notes
 
 def main() -> int:
     passed = failed = 0

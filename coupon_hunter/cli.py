@@ -844,16 +844,64 @@ def _parse_discount_list(raw: str, group: str) -> list:
     return out
 
 
+def _read_pasted_block() -> str:
+    """读用户粘贴的多行文本，直到一个空行结束。"""
+    lines = []
+    while True:
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line.strip():
+            break
+        # 用户可能在提示符后面直接粘，第一行会带上前面的提示残留，无妨
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _ask_platform_offer(platform: str):
-    """交互式问一个平台的数字，返回 Offer 或 None（跳过）。"""
-    from .delivery import Offer
-    from .stacking import Coupon
+    """交互式问一个平台的数字，返回 Offer 或 None（跳过）。
+
+    先让用户粘结账页文本（能自动认数字，省得一个个敲），
+    认出来的值作为默认值，用户确认或改写。
+    """
+    from .delivery import Offer, parse_checkout_text
 
     print()
     print(f"  ── {platform} ──")
-    print("     （照着外卖 App 的结账页填；不知道的直接回车跳过）")
+    print("     可以把结账页的文本粘进来，我自动认数字；不想粘就直接回车逐项填。")
+    print("     （粘贴多行后，敲一个空行结束）")
+    # 注意：提示符那一行读进来的内容不能丢——它往往正是「商品小计」那一行。
+    # 早先版本 `input("      > ")` 直接丢掉返回值，结果粘贴的第一行永远被吞掉。
+    try:
+        first = input("      > ")
+    except (EOFError, KeyboardInterrupt):
+        first = ""
+    rest = _read_pasted_block()
+    pasted = first + "\n" + rest if first.strip() else rest
 
-    items = _ask_float("      菜品小计（优惠前）：", -1)
+    pre = parse_checkout_text(pasted) if pasted.strip() else {}
+    if pre:
+        bits = []
+        label_map = [
+            ("items", "菜品"), ("delivery", "配送"), ("packing", "打包"),
+            ("shop_discount", "店铺满减"), ("coupon", "平台券"),
+            ("red_packet", "红包"), ("final", "实付"),
+        ]
+        for k, name in label_map:
+            if k in pre:
+                bits.append(f"{name} {pre[k]:g}")
+        if pre.get("member"):
+            bits.append("会员")
+        print(f"      ✓ 认到：{' | '.join(bits)}")
+        print("        下面每项的回车值就是它，不对就直接改。")
+    elif pasted.strip():
+        print("      （没认出数字，逐项填吧）")
+
+    def d(key, fallback):
+        return pre.get(key, fallback)
+
+    items = _ask_float("      菜品小计（优惠前）：", d("items", -1))
     if items < 0:
         print("      跳过这个平台")
         return None
@@ -861,35 +909,49 @@ def _ask_platform_offer(platform: str):
         print("      菜品是 0，跳过这个平台")
         return None
 
-    delivery = _ask_float("      配送费：", 0.0)
-    packing = _ask_float("      打包费：", 0.0)
+    delivery = _ask_float("      配送费：", d("delivery", 0.0))
+    packing = _ask_float("      打包费：", d("packing", 0.0))
 
+    shop_default = f"{pre['items']:g},{pre['shop_discount']:g}" if pre.get("shop_discount") else ""
     try:
-        raw = input("      门店满减（如 40,8 表示满40减8；多张用分号；没有回车）：").strip()
+        raw = input(f"      门店满减（如 40,8；多张分号；没有回车）"
+                    f"{'[' + shop_default + '] ' if shop_default else ''}：").strip()
     except (EOFError, KeyboardInterrupt):
         raw = ""
+    if not raw and shop_default:
+        raw = shop_default
     shop = _parse_discount_list(raw, "店铺券")
 
+    coupon_default = f"{pre['items']:g},{pre['coupon']:g}" if pre.get("coupon") else ""
     try:
-        raw = input("      平台券（格式 门槛,面额；多张用分号；没有回车）：").strip()
+        raw = input(f"      平台券（门槛,面额；多张分号；没有回车）"
+                    f"{'[' + coupon_default + '] ' if coupon_default else ''}：").strip()
     except (EOFError, KeyboardInterrupt):
         raw = ""
+    if not raw and coupon_default:
+        raw = coupon_default
     coupons = _parse_discount_list(raw, "平台券")
 
-    red = _ask_float("      红包（直接减多少，没有填 0）：", 0.0)
+    red = _ask_float("      红包（直接减多少，没有填 0）：", d("red_packet", 0.0))
 
-    member = False
+    member = bool(pre.get("member"))
     free_delivery = False
     try:
-        if input("      有会员吗？(y/N)：").strip().lower() in ("y", "yes", "是", "有"):
+        dft = "Y/n" if member else "y/N"
+        ans = input(f"      有会员吗？({dft})：").strip().lower()
+        if ans in ("y", "yes", "是", "有"):
             member = True
-            if input("        会员免配送费吗？(y/N)：").strip().lower() in ("y", "yes", "是", "有"):
-                free_delivery = True
+        elif ans in ("n", "no", "否", "没有"):
+            member = False
+        if member:
+            ans2 = input("        会员免配送费吗？(y/N)：").strip().lower()
+            free_delivery = ans2 in ("y", "yes", "是", "有")
     except (EOFError, KeyboardInterrupt):
         pass
 
     return Offer(platform, items, delivery, packing, shop, coupons, red,
-                 member=member, member_delivery_free=free_delivery)
+                 member=member, member_delivery_free=free_delivery,
+                 expected_final=pre.get('final'))
 
 
 def _parse_offer_spec(spec: str):

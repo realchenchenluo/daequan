@@ -62,6 +62,10 @@ class Offer:
     member: bool = False        # 有会员吗（美团会员 / 饿了么超级会员）
     member_delivery_free: bool = False   # 会员是否免配送费
     member_coupon: Coupon | None = None  # 会员专属券/红包
+    # 平台自己显示的实付金额。有的话拿它跟本工具算出来的对一遍——
+    # 对不上就说明「满减基数 / 叠加方式」的假设和这个平台不一样，
+    # 那我们的结果就不可信，必须让用户知道。
+    expected_final: float | None = None
 
     def all_coupons(self) -> list[Coupon]:
         cs = list(self.shop_discounts) + list(self.coupons)
@@ -115,6 +119,7 @@ def compute(offer: Offer) -> DeliveryResult:
         res.food_after = round(offer.items, 2)
         if offer.delivery or offer.packing:
             res.notes.append("没有任何券/满减")
+        _crosscheck(offer, res)
         return res
 
     # 门店满减和平台券在 stacking 里是两个不同类别，可以叠加
@@ -129,7 +134,29 @@ def compute(offer: Offer) -> DeliveryResult:
     res.steps = r.steps
     res.unused = r.unused
 
+    _crosscheck(offer, res)
     return res
+
+
+def _crosscheck(offer: Offer, res: "DeliveryResult") -> None:
+    """拿平台显示的实付金额核对我们的计算。
+
+    这是整个模块最重要的一道保险：满减基数、券的叠加方式各平台都没有
+    公开规则，我们是按常见做法假设的。如果平台自己显示了实付金额，
+    对一遍就知道假设对不对——对不上必须说出来，不能装作算准了。
+    """
+    expected = offer.expected_final
+    if expected is None:
+        return
+    diff = round(res.final_price - expected, 2)
+    if abs(diff) < 0.01:
+        res.notes.append(f"✅ 与平台显示的实付 {expected:.2f} 一致")
+    else:
+        res.notes.append(
+            f"⚠️ **和平台显示的实付对不上**：平台是 {expected:.2f}，"
+            f"本工具算出 {res.final_price:.2f}（差 {diff:+.2f}）。"
+            f"说明这个平台的优惠规则和我们的假设不同，**以平台为准**。"
+        )
 
 
 def compare(offers: list[Offer]) -> list[DeliveryResult]:
@@ -203,6 +230,79 @@ def parse_share_text(text: str) -> tuple[str, str]:
 
     # 3) 认不出来就说认不出来
     return "", url
+
+
+# ────────────────────────────────────────────────
+# 从粘贴的结账页文本里认数字
+# ────────────────────────────────────────────────
+
+# 金额的写法：¥45.00 / 45元 / -¥8.00 / 45
+_AMOUNT = re.compile(r"[-−]?\s*[¥￥]?\s*(\d+(?:[.,]\d{1,2})?)")
+
+# 关键词 → 逻辑字段。越靠前越优先匹配（避免「商品小计」被「小计」抢走）。
+_FIELD_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("items",       ("商品小计", "菜品小计", "商品合计", "菜品合计", "餐品小计",
+                     "商品金额", "菜品金额", "小计")),
+    ("packing",     ("包装费", "打包费", "餐盒费", "包装袋", "餐盒")),
+    ("delivery",    ("配送费", "跑腿费", "配送", "运费")),
+    ("shop_discount", ("店铺满减", "店铺优惠", "商家优惠", "满减", "商品优惠")),
+    ("coupon",      ("优惠券", "平台券", "代金券", "红包券", "券")),
+    ("red_packet",  ("红包", "立减", "抵扣")),
+    ("final",       ("实付", "合计", "总计", "应付", "需支付", "支付")),
+]
+
+
+def parse_checkout_text(text: str) -> dict:
+    """从粘贴的结账页文本里抠出各项金额。
+
+    为什么做这个：抓不到平台菜单，只能让用户手填。但结账页上这些数字
+    是可以长按复制的，与其让他一个一个敲，不如让它自己认。
+
+    返回 dict，只含认出来的字段（认不出的不出现，不会瞎填）。可能的键：
+        items, delivery, packing, shop_discount, coupon, red_packet,
+        final（实付金额，用来核对算得对不对）, member（提到会员/超级会员）
+
+    认错的代价很低——CLI 里会把这些值当作「默认值」显示出来让用户确认，
+    不对可以直接改。
+    """
+    result: dict = {}
+    if not text:
+        return result
+
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # 找这一行属于哪个字段。按顺序试，第一个命中的算
+        field = None
+        for name, keys in _FIELD_KEYWORDS:
+            if any(k in line for k in keys):
+                field = name
+                break
+        if field is None:
+            continue
+
+        m = _AMOUNT.search(line)
+        if not m:
+            continue
+        try:
+            value = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+
+        # 折扣类的一律取正数（「-¥8.00」和「¥8.00」都是一个减 8 的意思）
+        if field in ("shop_discount", "coupon", "red_packet"):
+            value = abs(value)
+            # 同一个字段出现多次就累加（比如两行红包）
+            result[field] = round(result.get(field, 0.0) + value, 2)
+        else:
+            # 其余字段保留第一次出现的值——「合计」这类词后面常跟着多个数字
+            result.setdefault(field, value)
+
+    if "会员" in text or "超级会员" in text:
+        result["member"] = True
+    return result
 
 
 def render_comparison(results: list[DeliveryResult], shop: str = "") -> str:
