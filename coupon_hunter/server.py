@@ -117,10 +117,43 @@ class Handler(BaseHTTPRequestHandler):
             self._api()
         elif path == "/refresh":
             self._refresh()
+        elif path in ("/upload", "/比价"):
+            self._upload_page()
         elif path == "/favicon.ico":
             self._send(b"", "image/x-icon", 204)
         else:
             self._send("404 Not Found".encode("utf-8"), "text/plain; charset=utf-8", 404)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path != "/upload":
+            self._send(b"404 Not Found", "text/plain; charset=utf-8", 404)
+            return
+
+        # 限制读取长度，防止有人往本地服务灌大文件
+        max_body = 40 * 1024 * 1024
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > max_body:
+            self._json({"error": "上传内容为空或过大"}, 413)
+            return
+
+        body = self.rfile.read(length)
+
+        from .upload import handle_upload
+
+        try:
+            code, payload = handle_upload(body, self.headers.get("Content-Type", ""))
+        except Exception as e:
+            code, payload = 500, {"error": f"处理失败：{type(e).__name__}: {e}"}
+        self._json(payload, code)
+
+    def _upload_page(self) -> None:
+        from .upload import render_upload_page
+
+        self._send(render_upload_page().encode("utf-8"), "text/html; charset=utf-8")
 
     def _page(self) -> None:
         coupons, result, at = self.cache.get()
@@ -131,7 +164,7 @@ class Handler(BaseHTTPRequestHandler):
             title=self.page_title,
             refresh_url="/refresh",
             note=f"数据抓取于 {updated}（缓存 {self.cache.ttl // 60} 分钟）",
-            source_note="点右上角「刷新」可立即重新抓取",
+            source_note="点右上角「刷新」可立即重新抓取；要外卖比价请访问 /upload",
         )
         self._send(html_text.encode("utf-8"), "text/html; charset=utf-8")
 
