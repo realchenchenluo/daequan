@@ -116,6 +116,35 @@ def _merge_label_value(lines: list[str]) -> list[str]:
     return out
 
 
+def ocr_blocks(path: str | Path) -> list[tuple[str, float, float, float, float]]:
+    """OCR 并保留每个文本块的位置，返回 [(text, x, y, w, h)]。
+
+    为什么要位置：RapidOCR 是按文本块识别的，常把「折后价」和「28.47」
+    识别成两个独立的块。光看文本顺序容易配错（实测把「已补¥7.1」当成了
+    现价）。有了坐标就能做「标签右边/下面最近的金额」这种配对。
+
+    只支持 RapidOCR（系统自带 OCR 拿不到可靠的坐标）。
+    """
+    if not has_rapid():
+        return []
+    engine = _get_rapid()
+    result, _elapse = engine(str(path))
+    blocks = []
+    for item in result or []:
+        try:
+            box, text = item[0], str(item[1]).strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        xs = [float(pt[0]) for pt in box]
+        ys = [float(pt[1]) for pt in box]
+        blocks.append((text, min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)))
+    # 按行（y 聚类）再按 x 排，读起来接近人眼顺序
+    blocks.sort(key=lambda b: (round(b[2] / 12), b[1]))
+    return blocks
+
+
 def _ocr_rapid(path: Path) -> str:
     engine = _get_rapid()
     result, _elapse = engine(str(path))

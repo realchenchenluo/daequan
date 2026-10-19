@@ -11,7 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from coupon_hunter.product import describe_product, parse_product_page  # noqa: E402
+from coupon_hunter.product import (  # noqa: E402
+    _split_block,
+    describe_product,
+    parse_product_blocks,
+    parse_product_page,
+)
 
 CASES = []
 
@@ -134,6 +139,78 @@ def _():
     assert "merchant" not in info
     assert "没认出有效信息" in describe_product(info)
 
+
+
+# ── 以下是「真实截图版式」的回归用例 ──
+# 合成 blocks：(text, x, y, w, h)，坐标按真实截图的比例估的。
+# 这些用例对应 5 张真实美团/京东截图，覆盖了踩过的所有坑。
+
+@case("块内多标签：金额要归给正确的标签")
+def _():
+    # 京东的「一口价|已补￥7.1」：7.1 是已补，不是现价
+    r = _split_block("一口价「已补￥7.1")
+    kinds = [k for k, _v, _p in r]
+    assert "save" in kinds and "price" not in kinds, r
+
+    # 「一口价￥15.9」这种正常的，要认成价格
+    r2 = _split_block("一口价￥15.9")
+    assert ("price", 15.9, 8) in [(k, v, p) for k, v, p in r2], r2
+
+
+@case("金额在标签前面时不认（避免把合计当成券后价）")
+def _():
+    # 「￥44.8 券后约」：44.8 是前面的合计，券后价在另一个块里
+    r = _split_block("￥44.8券后约！")
+    assert r == [], r
+
+
+@case("噪音数字不当价格（「一口价1已补$25.3」里的 1 是竖线）")
+def _():
+    r = _split_block("一口价1已补￥25.3")
+    prices = [v for k, v, _p in r if k == "price"]
+    assert 1.0 not in prices, f"把竖线认成了 1 元：{r}"
+
+
+@case("京东版式：现价在标签左边，已补算优惠")
+def _():
+    blocks = [
+        ("￥10.9起",        38, 1465, 120, 40),
+        ("一口价1已补￥7.1", 242, 1480, 300, 40),
+        ("￥18",             45, 1549, 80, 40),
+        ("【B老吃家私藏】单人吃饱2件套", 148, 1764, 500, 40),
+    ]
+    r = parse_product_blocks(blocks)
+    assert r.get("price") == 10.9, r
+    assert r.get("saved") == 7.1, r
+    assert r.get("original") == 18.0, r
+
+
+@case("券后价比一口价更该采用（香辣鸡架版式）")
+def _():
+    blocks = [
+        ("28.47",        180, 1102, 120, 44),
+        ("折后价！",       47, 1140, 120, 44),
+        ("¥33.5",         46, 1207, 90, 36),
+        ("香辣鸡架（整只）", 52, 1290, 300, 44),
+        ("￥44.8券后约！", 187, 2213, 260, 40),
+        ("￥24.8^",       390, 2201, 90, 36),
+    ]
+    r = parse_product_blocks(blocks)
+    assert r.get("price") == 24.8, f"应取券后价 24.8，实际 {r.get('price')}"
+    assert r.get("original") == 33.5, r
+
+
+@case("图片里的 logo 文字不能当商品名")
+def _():
+    blocks = [
+        ("百事可乐",      845, 1082, 150, 40),   # 瓶身 logo，在价格上方
+        ("￥11.1起",       38, 1463, 120, 40),
+        ("一口价1已补￥25.3", 223, 1479, 300, 40),
+        ("￥36.4",         45, 1548, 90, 40),
+        ("豪横小食随心选",  52, 1764, 300, 44),
+    ]
+    r = parse_product_blocks(blocks)
+    assert r.get("product") == "豪横小食随心选", f"实际 {r.get('product')!r}"
 
 def main() -> int:
     passed = failed = 0

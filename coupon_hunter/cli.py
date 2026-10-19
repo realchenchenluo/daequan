@@ -1293,8 +1293,8 @@ def cmd_product(opts: dict) -> int:
     跨平台比价仍然需要另外两家的价格——这一点会在输出里写明，
     不假装一张图能算出三家。
     """
-    from .product import describe_product, parse_product_page
-    from .receipt import OcrError, ocr_image
+    from .product import describe_product, parse_product_image
+    from .receipt import OcrError
 
     print()
 
@@ -1316,13 +1316,12 @@ def cmd_product(opts: dict) -> int:
     if not has_rapid():
         print("        想更准：python -m pip install -r requirements-ocr.txt")
     try:
-        text = ocr_image(path)
+        # 用坐标版解析：能分清「一口价」和「已补」各自的钱
+        info = parse_product_image(path)
     except OcrError as e:
         print(f"  ✗ {e}")
         print()
         return 1
-
-    info = parse_product_page(text)
     print()
     print("  " + "─" * 56)
     print(f"  {describe_product(info)}")
