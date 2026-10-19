@@ -56,6 +56,8 @@ jobs:
           mkdir -p _site
           # Pages 默认会走 Jekyll 处理，关掉它，省时间也少一层意外
           touch _site/.nojekyll
+          # 纯前端的外卖比价页（浏览器里跑 OCR，不需要服务器）
+          cp web/compare.html _site/compare.html
 
           # 第一步：先把当前线上那份抓回来当兜底。
           # 第三方免费接口偶尔会 5xx（实测遇到过一次 502），那次如果直接

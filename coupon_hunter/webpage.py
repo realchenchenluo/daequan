@@ -153,6 +153,12 @@ def render(
     )
 
     top_note = f'<div class="sub note">{html.escape(note)}</div>' if note else ""
+    # 首页给外卖比价页一个入口（那个页面在 GitHub Pages 上是纯静态的）
+    top_note += (
+        '<div class="sub" style="margin-top:6px">'
+        '<a href="./compare.html" style="color:var(--blue);font-weight:600">'
+        '🍔 外卖比价（传截图自动算）→</a></div>'
+    )
     src_note = f'<div class="sub">{html.escape(source_note)}</div>' if source_note else ""
 
     return f"""<!DOCTYPE html>

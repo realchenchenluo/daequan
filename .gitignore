@@ -24,3 +24,7 @@ _live.html
 _l.html
 _msg*.txt
 _probe/
+
+# 测试用图片
+web/_test*
+_wasm/

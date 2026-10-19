@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="color-scheme" content="dark light">
+<title>外卖比价 · 传截图自动算</title>
+<style>
+  :root{--bg:#0f1115;--card:#181b22;--line:#282d38;--text:#e8eaed;--dim:#9aa0aa;
+        --accent:#ffd60a;--green:#34c759;--blue:#4da3ff;--red:#ff6b6b;
+        --safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px)}
+  @media (prefers-color-scheme:light){:root{--bg:#f2f3f5;--card:#fff;--line:#e3e5e9;
+        --text:#1c1e21;--dim:#6b7280;--accent:#c98a00;--green:#1a9e46;--blue:#0b6bd6;--red:#d93025}}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--text);padding-top:var(--safe-top);
+       font:16px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:600px;margin:0 auto;padding:20px 16px calc(30px + var(--safe-bottom))}
+  h1{font-size:20px;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:18px;line-height:1.7}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+  .row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .row:last-child{margin-bottom:0}
+  .row label{flex:none;width:84px;font-size:14px;color:var(--dim)}
+  .filebox{flex:1;min-width:0;position:relative}
+  .filebox input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
+  .filebtn{display:block;padding:11px 12px;border:1px dashed var(--line);border-radius:10px;
+           font-size:13.5px;color:var(--dim);background:var(--bg);text-align:center;
+           overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .filebox.has .filebtn{border-style:solid;border-color:var(--green);color:var(--green)}
+  .field{display:flex;align-items:center;gap:10px}
+  .field label{flex:none;width:84px;font-size:14px;color:var(--dim)}
+  .field input[type=text]{flex:1;min-width:0;padding:11px 12px;border-radius:10px;
+       border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:15px}
+  button{width:100%;border:none;border-radius:14px;padding:16px;font-size:16px;font-weight:700;
+         cursor:pointer;min-height:54px;background:var(--blue);color:#fff}
+  button:active{transform:scale(.98)}
+  button:disabled{opacity:.55}
+  .hint{color:var(--dim);font-size:12.5px;line-height:1.75;margin-top:12px}
+  #progress{margin-top:14px;font-size:13.5px;color:var(--blue);white-space:pre-line;min-height:1.2em}
+  .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:8px}
+  .bar > i{display:block;height:100%;width:0;background:var(--blue);transition:width .25s}
+  .rank{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:10px}
+  .rank.first{border-color:var(--green)}
+  .rank .top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+  .plat{font-weight:700;font-size:16px}
+  .price{font-weight:800;font-size:20px;color:var(--green);white-space:nowrap}
+  .detail{color:var(--dim);font-size:13px;margin-top:6px}
+  .warn{color:var(--accent);font-size:13px;margin-top:6px}
+  .err{color:var(--red);font-size:14px;margin-top:8px}
+  .steps{font-size:13.5px;line-height:1.9;margin-top:8px;padding-left:20px}
+  .steps li{margin-bottom:3px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11.5px;
+         background:rgba(52,199,89,.16);color:var(--green);margin-left:6px;vertical-align:2px}
+  .raw{font-size:11.5px;color:var(--dim);background:var(--bg);border-radius:8px;
+       padding:8px 10px;margin-top:8px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;
+       max-height:110px;overflow:auto}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>外卖比价</h1>
+  <div class="sub">
+    三家 App 各截一张<b>结账页</b>（能看到"商品小计 / 配送费 / 实付"那一屏），选好点按钮，
+    自动算出哪家最便宜、券怎么叠、该点哪些。<br>
+    <b>图片只在你手机里识别，不会上传到任何服务器。</b>
+  </div>
+
+  <div class="card">
+    <div class="row"><label>美团</label>
+      <div class="filebox" id="fb-美团"><input type="file" accept="image/*" data-plat="美团"><span class="filebtn">点这里选图</span></div>
+    </div>
+    <div class="row"><label>淘宝闪购</label>
+      <div class="filebox" id="fb-淘宝闪购"><input type="file" accept="image/*" data-plat="淘宝闪购"><span class="filebtn">点这里选图</span></div>
+    </div>
+    <div class="row"><label>京东外卖</label>
+      <div class="filebox" id="fb-京东外卖"><input type="file" accept="image/*" data-plat="京东外卖"><span class="filebtn">点这里选图</span></div>
+    </div>
+    <div class="hint">填一两张也能比，填几张比几张。图片过大时会自动缩小再识别。</div>
+  </div>
+
+  <div class="card">
+    <div class="field"><label>店名</label><input type="text" id="shop" placeholder="可不填"></div>
+  </div>
+
+  <button id="go">开始比价</button>
+  <div id="progress"></div>
+  <div class="bar" id="barwrap" style="display:none"><i id="bar"></i></div>
+
+  <div id="result" style="margin-top:16px"></div>
+  <div class="hint" style="margin-top:18px">
+    本工具只给建议，<b>不会替你下单</b>。券的最终可用性和金额以下单页结算时为准。<br>
+    <a href="./index.html">← 回优惠券列表</a>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+"use strict";
+
+/* ═══════════════════════════════════════════════════════════
+   1. 解析 OCR 文本
+   ───────────────────────────────────────────────────────────
+   OCR 一定会出错（插空格、全角标点、个别字认错），所以：
+     · 先压紧文本（全角转半角 + 去空白）
+     · 关键词用「允许夹字符」的宽松正则
+     · 数字抽不到就留空，绝不填 0
+   ═══════════════════════════════════════════════════════════ */
+
+const FULLWIDTH = {
+  "０":"0","１":"1","２":"2","３":"3","４":"4","５":"5","６":"6","７":"7","８":"8","９":"9",
+  "．":".","。":".","，":",","：":":","￥":"¥","－":"-","—":"-","–":"-","　":" "
+};
+
+function normalize(s) {
+  let out = "";
+  for (const ch of String(s)) out += (FULLWIDTH[ch] !== undefined ? FULLWIDTH[ch] : ch);
+  return out.replace(/\s+/g, "");
+}
+
+// 关键词 -> 允许中间夹 0-2 个字符的正则
+function fuzzy(kw) {
+  return new RegExp([...kw].map(c => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".{0,2}"));
+}
+
+const FIELDS = [
+  ["items",     ["商品小计","菜品小计","商品合计","菜品合计","餐品小计","商品金额","菜品金额","商品总额","小计"]],
+  ["packing",   ["包装费","打包费","餐盒费","包装袋","餐盒","包装","打包"]],
+  ["delivery",  ["配送费","跑腿费","配送","运费"]],
+  ["shopDiscount", ["店铺满减","店铺优惠","商家优惠","满减","商品优惠"]],
+  ["coupon",    ["优惠券","平台券","代金券","红包券","券"]],
+  ["redPacket", ["红包","立减","抵扣"]],
+  ["final",     ["实付","合计","总计","应付","需支付","支付","实"]]
+].map(([name, kws]) => [name, kws.map(fuzzy)]);
+
+const NUM = /[-−]?¥?(\d{1,6}(?:[.,]\d{1,2})?)/;
+
+function parseReceipt(text) {
+  const out = {};
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = normalize(rawLine);
+    if (!line) continue;
+
+    let field = null;
+    for (const [name, pats] of FIELDS) {
+      if (pats.some(p => p.test(line))) { field = name; break; }
+    }
+    if (!field) continue;
+
+    const m = NUM.exec(line);
+    if (!m) continue;
+    let v = parseFloat(m[1].replace(/,/g, ""));
+    if (!isFinite(v)) continue;
+
+    if (["shopDiscount","coupon","redPacket"].includes(field)) {
+      v = Math.abs(v);
+      // 抽到 0 大概率是 OCR 认错了，不采信
+      if (v === 0) continue;
+      out[field] = Math.round(((out[field] || 0) + v) * 100) / 100;
+    } else {
+      if (v === 0 && field === "final") continue;
+      if (out[field] === undefined) out[field] = v;
+    }
+  }
+  if (/会员/.test(text)) out.member = true;
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   2. 算到手价
+   ───────────────────────────────────────────────────────────
+   外卖的结构：
+     菜品小计 + 配送费 + 打包费 − 门店满减 − 平台券 − 红包
+   门槛按「菜品小计」判（外卖平台券通常看原价）。
+   ═══════════════════════════════════════════════════════════ */
+
+function compute(o) {
+  const steps = [];
+  let food = o.items;
+  let unused = [];
+
+  // 门店满减（门槛看菜品小计）
+  if (o.shopDiscount) {
+    food -= o.shopDiscount;
+    steps.push(`门店满减 −${o.shopDiscount.toFixed(2)}`);
+  }
+  // 平台券
+  if (o.coupon) {
+    food -= o.coupon;
+    steps.push(`平台券 −${o.coupon.toFixed(2)}`);
+  }
+  // 红包
+  if (o.redPacket) {
+    food -= o.redPacket;
+    steps.push(`红包 −${o.redPacket.toFixed(2)}`);
+  }
+  if (food < 0) food = 0;
+
+  const delivery = o.member && o.memberFree ? 0 : o.delivery;
+  const total = food + delivery + (o.packing || 0);
+
+  return { food, delivery, packing: o.packing || 0, total, steps, unused };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   3. OCR
+   ═══════════════════════════════════════════════════════════ */
+
+let workerPromise = null;
+function getWorker(onProgress) {
+  if (!workerPromise) {
+    workerPromise = Tesseract.createWorker("chi_sim", 1, {
+      logger: m => {
+        if (onProgress && m.status) onProgress(m.status, m.progress || 0);
+      }
+    });
+  }
+  return workerPromise;
+}
+
+// 图片太大先缩到 1400px 宽，识别更快也更稳
+function downscale(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const maxW = 1400;
+      const scale = Math.min(1, maxW / img.width);
+      if (scale >= 0.999) { URL.revokeObjectURL(url); resolve(file); return; }
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => b ? resolve(b) : reject(new Error("缩放失败")), "image/png");
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("读图失败")); };
+    img.src = url;
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   4. 交互
+   ═══════════════════════════════════════════════════════════ */
+
+const files = window.__files = {};   // 平台 -> File（挂到 window 便于调试）
+const PLATFORMS = ["美团", "淘宝闪购", "京东外卖"];
+
+document.querySelectorAll("input[type=file]").forEach(inp => {
+  inp.addEventListener("change", () => {
+    const plat = inp.dataset.plat;
+    const f = inp.files && inp.files[0];
+    const box = document.getElementById("fb-" + plat);
+    const label = box.querySelector(".filebtn");
+    if (f) {
+      files[plat] = f;
+      box.classList.add("has");
+      label.textContent = f.name.length > 18 ? f.name.slice(0, 16) + "…" : f.name;
+    } else {
+      delete files[plat];
+      box.classList.remove("has");
+      label.textContent = "点这里选图";
+    }
+  });
+});
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+$("go").addEventListener("click", async () => {
+  const btn = $("go"), prog = $("progress"), bar = $("bar"), barwrap = $("barwrap");
+  const res = $("result");
+  res.innerHTML = "";
+
+  const chosen = PLATFORMS.filter(p => files[p]);
+  if (!chosen.length) {
+    res.innerHTML = '<div class="err">请至少选一张结账页截图。</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "识别中…";
+  barwrap.style.display = "block";
+  bar.style.width = "0%";
+
+  const offers = [];
+  const notes = [];
+
+  try {
+    const worker = await getWorker((status, progress) => {
+      prog.textContent = "加载识别引擎… " + Math.round(progress * 100) + "%";
+    });
+
+    let i = 0;
+    for (const plat of chosen) {
+      i++;
+      prog.textContent = `正在识别 ${plat}（${i}/${chosen.length}）…`;
+      bar.style.width = Math.round((i - 1) / chosen.length * 100) + "%";
+
+      let blob = files[plat];
+      try { blob = await downscale(files[plat]); } catch (e) { /* 用原图 */ }
+
+      const { data } = await worker.recognize(blob);
+      const pre = parseReceipt(data.text);
+
+      if (pre.items === undefined) {
+        notes.push(`${plat}：没认出「商品小计」，可能不是结账页截图`);
+        continue;
+      }
+      pre.platform = plat;
+      pre.raw = data.text;
+      offers.push(pre);
+    }
+    bar.style.width = "100%";
+    prog.textContent = "";
+    barwrap.style.display = "none";
+
+    if (!offers.length) {
+      res.innerHTML = '<div class="err">没有识别出有效的结账页。</div>' +
+        '<div class="detail">' + esc(notes.join("；")) + '</div>';
+      return;
+    }
+
+    render(offers, notes);
+
+  } catch (e) {
+    res.innerHTML = '<div class="err">识别失败：' + esc(e.message || e) + '</div>' +
+      '<div class="detail">换个浏览器试试（微信内置浏览器可能不支持）。</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "开始比价";
+    prog.textContent = "";
+    barwrap.style.display = "none";
+  }
+});
+
+function render(offersRaw, notes) {
+  const shop = $("shop").value.trim();
+  const offers = offersRaw.map(o => {
+    const c = compute(o);
+    return { ...o, calc: c };
+  });
+  offers.sort((a, b) => a.calc.total - b.calc.total);
+
+  let h = "";
+  if (shop) h += `<div class="sub" style="margin:0 0 10px">${esc(shop)}</div>`;
+
+  offers.forEach((o, idx) => {
+    const c = o.calc;
+    const first = idx === 0 && offers.length > 1;
+    h += '<div class="rank' + (first ? ' first' : '') + '">';
+    h += '<div class="top"><span class="plat">' + esc(o.platform) +
+         (first ? '<span class="badge">最便宜</span>' : '') +
+         '</span><span class="price">¥' + c.total.toFixed(2) + '</span></div>';
+
+    let d = `菜品 ${o.items.toFixed(2)} → ${c.food.toFixed(2)}`;
+    if (c.delivery) d += ` + 配送 ${c.delivery.toFixed(2)}`;
+    if (c.packing) d += ` + 打包 ${c.packing.toFixed(2)}`;
+    h += '<div class="detail">' + esc(d) + '</div>';
+
+    if (c.steps.length) {
+      h += '<div class="detail">' + esc(c.steps.join("；")) + '</div>';
+    }
+
+    // 用平台显示的实付核对
+    if (o.final !== undefined) {
+      const diff = c.total - o.final;
+      if (Math.abs(diff) < 0.01) {
+        h += '<div class="detail" style="color:var(--green)">✅ 与平台显示的实付 ' +
+             o.final.toFixed(2) + ' 一致</div>';
+      } else {
+        h += '<div class="warn">⚠️ 和平台显示的实付对不上：平台 ' + o.final.toFixed(2) +
+             '，本工具算 ' + c.total.toFixed(2) + '（差 ' + (diff > 0 ? "+" : "") +
+             diff.toFixed(2) + '）。<b>以平台为准</b>，可能是截图有项没看清。</div>';
+      }
+    }
+
+    // 操作步骤
+    const steps = [];
+    if (c.steps.length) steps.push("结算页确认这些优惠已生效：" + c.steps.join("、").replace(/−/g, "减 "));
+    steps.push("核对实付金额，和上面显示的一致再付款");
+
+    h += '<ol class="steps">' + steps.map(s => '<li>' + esc(s) + '</li>').join("") + '</ol>';
+
+    h += '<details style="margin-top:8px"><summary style="font-size:12px;color:var(--dim);cursor:pointer">看识别原文</summary>' +
+         '<div class="raw">' + esc(o.raw || "") + '</div></details>';
+    h += '</div>';
+  });
+
+  if (offers.length > 1) {
+    const gap = offers[offers.length - 1].calc.total - offers[0].calc.total;
+    h += '<div class="detail" style="text-align:center;margin:14px 0;font-size:14px">';
+    h += gap > 0.01 ? `建议走 <b>${esc(offers[0].platform)}</b>，比最贵的省 <b>¥${gap.toFixed(2)}</b>`
+                    : "几家差不多，挑顺手的就行";
+    h += '</div>';
+  }
+
+  if (notes && notes.length) {
+    h += '<div class="detail">' + esc(notes.join("；")) + '</div>';
+  }
+
+  $("result").innerHTML = h;
+}
+</script>
+</body>
+</html>

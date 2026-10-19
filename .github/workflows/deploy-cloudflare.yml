@@ -61,6 +61,8 @@ jobs:
         run: |
           mkdir -p _site
           touch _site/.nojekyll
+          # 纯前端的外卖比价页（浏览器里跑 OCR，不需要服务器）
+          cp web/compare.html _site/compare.html
           # 和 GitHub Pages 那套同样的兜底逻辑：
           # 先取线上旧页面，抓到 0 条时 auto 不覆盖它，避免发布空页面
           curl -sf --max-time 25 "https://realchenchenluo.github.io/daequan/" \
