@@ -51,6 +51,7 @@ HELP = """
                             一次性算，不进交互
   比价                      同一件商品在几个平台的到手价对比，排出最便宜的那个
   外卖比价                  同一家外卖在美团/饿了么/京东，算上券和配送费谁最便宜
+  商品 <截图>               发一张商品页截图，看这单多少钱、能用什么券
   关注                      看关注清单（券自动更新，到目标价就提醒）
   关注 --名 "某耳机" --价 "京东=399,拼多多=359" --目标 350   加一个
 
@@ -105,6 +106,7 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
         "删除": None,
         "清空": False,
         "截图": [],
+        "图片": None,
         "名": None,
         "方案": None,
         "端口": None,
@@ -226,12 +228,20 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
                 opts["方案"] = []
             opts["方案"].append(nxt)
             i += 2
+        elif a in ("--图片", "--image", "-i"):
+            opts["图片"] = nxt
+            i += 2
         elif a in ("--截图", "--shot"):
             # 外卖比价用：--截图 "美团=D:\\a.png"
             if not isinstance(opts.get("截图"), list):
                 opts["截图"] = []
             opts["截图"].append(nxt)
             i += 2
+        elif not a.startswith("-"):
+            # 裸参数，例如「python run.py 商品 D:\shot.png」里的路径。
+            # 早先版本直接丢掉，导致商品命令收不到文件路径。
+            opts.setdefault("_args", []).append(a)
+            i += 1
         else:
             i += 1
 
@@ -1272,6 +1282,127 @@ def cmd_watch(opts: dict) -> int:
     return 0
 
 
+
+def cmd_product(opts: dict) -> int:
+    """商品页识别：一张截图 → 这单多少钱 + 能用什么券 + 还差什么。
+
+    设计意图：用户最常见的动作是在外卖 App 里看到某个商品，
+    截一张商品页就发过来。那就用**一张图**给出这一单的结论，
+    而不是逼他截三张、走完整比价流程。
+
+    跨平台比价仍然需要另外两家的价格——这一点会在输出里写明，
+    不假装一张图能算出三家。
+    """
+    from .product import describe_product, parse_product_page
+    from .receipt import OcrError, ocr_image
+
+    print()
+
+    args = opts.get("_args") or []
+    path = opts.get("图片") or (args[0] if args else None) or opts.get("名")
+    if not path:
+        print("  用法：python run.py 商品 <截图路径>")
+        print("  例如：python run.py 商品 D:\\shot.png")
+        print()
+        return 1
+
+    path = str(path).strip().strip('"').strip("'")
+
+    print(f"  识别：{path}")
+    try:
+        text = ocr_image(path)
+    except OcrError as e:
+        print(f"  ✗ {e}")
+        print()
+        return 1
+
+    info = parse_product_page(text)
+    print()
+    print("  " + "─" * 56)
+    print(f"  {describe_product(info)}")
+    print("  " + "─" * 56)
+
+    price = info.get("price")
+    if price is None:
+        print()
+        print("  没读出价格，没法算。可以换一张更清晰的截图（只截价格那一块就够）。")
+        print()
+        return 1
+
+    # 在已抓到的券里找商家/品牌相关的
+    from .config import load_config
+    from .rank import dedupe, rank
+    from .sources import fetch_all
+
+    print()
+    print("  正在找这个商家能用的券……")
+    try:
+        coupons = dedupe(rank(fetch_all(load_config().get("sources") or []).coupons))
+    except Exception as e:
+        coupons = []
+        print(f"  （抓券失败：{type(e).__name__}）")
+
+    merchant = (info.get("merchant") or "").strip()
+    product = (info.get("product") or "").strip()
+
+    hits = []
+    if merchant or product:
+        for c in coupons:
+            t = c.title
+            if (merchant and merchant in t) or (product and product[:6] in t) or \
+               (merchant and any(k in t for k in (merchant[:2],)) and len(merchant) >= 2):
+                hits.append(c)
+
+    # 平台级通用券也算「能用」，但要说清楚不是这家的专属券
+    generic = [c for c in coupons if c not in hits and c.tag in ("口令券", "官方券", "领券入口")]
+
+    print()
+    if hits:
+        print(f"  ✅ 找到 {len(hits)} 张和「{merchant or product}」相关的券：")
+        for c in hits:
+            print(f"     · [{c.platform}] {c.title}")
+    else:
+        print(f"  ❌ 没有找到「{merchant or product}」的专属券。")
+        print()
+        print("     说明：商家专属券（店铺券）只在 App 里、由商家自己发，")
+        print("     走的是商家侧接口，没有公开渠道能批量拿到。")
+        print("     GitHub 上也没有现成方案（查过，唯一沾边的是微信支付商家券，")
+        print("     跟外卖无关）。")
+
+    if generic:
+        print()
+        print(f"  另外这些平台通用券可能能用（不是这家专属，是平台发的）：")
+        for c in generic[:6]:
+            print(f"     · [{c.platform}] {c.title[:40]}")
+        if len(generic) > 6:
+            print(f"     ……还有 {len(generic) - 6} 张，运行「python run.py 搜券 --平台 {generic[0].platform}」看全部")
+
+    # 算这一单
+    print()
+    print("  " + "─" * 56)
+    print(f"  这个商品现在标价 {price:g}")
+    if info.get("original"):
+        print(f"  原价 {info['original']:g}，平台已经降了 {info['original'] - price:g}")
+    print()
+    print("  平台上的「一口价 / 立省」通常已经是它给的最低价了。")
+    print("  想再省，只能看有没有**平台券**能叠在上面——去对应 App 的")
+    print("  「我的 → 优惠券」里看有没有能用的红包。")
+    print()
+    print("  " + "─" * 56)
+    print("  ⚠️ 关于跨平台比价：")
+    print("    同一道菜在美团/饿了么/京东的价格不一样，但**只有你能看到**")
+    print("    （平台不开放菜单接口，实测过）。所以想比价，还是得在另外")
+    print("    两家搜一下这个店名，把价格告诉我，或者用「外卖比价」传截图。")
+    print()
+
+    if info.get("suspicious"):
+        print("  ⚠️ 识别过程中有读不准的地方，上面已经标出来了。")
+        print("     价格那一项如果也不确定，建议手动核对一下。")
+        print()
+
+    return 0
+
+
 def cmd_menu(sources: list[dict]) -> int:
     """双击 .bat 时进来的交互菜单。
 
@@ -1370,6 +1501,7 @@ _COMMANDS = {
     "叠券": "stack", "凑单": "stack", "实付": "stack", "stack": "stack",
     "外卖比价": "delivery", "外卖": "delivery", "点外卖": "delivery", "delivery": "delivery",
     "关注": "watch", "关注清单": "watch", "监控": "watch", "watch": "watch",
+    "商品": "product", "识图": "product", "product": "product",
     "比价": "compare", "compare": "compare",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
@@ -1433,6 +1565,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_delivery(opts)
     if cmd == "watch":
         return cmd_watch(opts)
+    if cmd == "product":
+        return cmd_product(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":

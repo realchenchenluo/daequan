@@ -204,6 +204,123 @@ function compute(o) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   2.5 商品页解析（只有一张图时用这个）
+   ───────────────────────────────────────────────────────────
+   商品页和结账页不一样：上面没有"商品小计"，而是"一口价 / 原价 / 立省"。
+   真实截图的 OCR 会认错字（口→囗、.→·、10.3→1a3），所以：
+     · 形近字先归一化
+     · ¥ 后面那一整段必须纯数字才采信，混字母就整段作废
+       （截取其中一部分会得到完全错的金额，比读不出来更糟）
+   ═══════════════════════════════════════════════════════════ */
+
+const LOOKALIKE = { "囗":"口", "·":".", "・":".", "—":"-", "–":"-", "《":" ", "〉":" " };
+
+function normProduct(s) {
+  let t = normalize(s);
+  for (const [a, b] of Object.entries(LOOKALIKE)) t = t.split(a).join(b);
+  // 实测 tesseract.js 的两个高频误识：
+  //   「一口价」的「口」→ 0；「¥」→ y
+  t = t.replace(/一[0Oo口]价/g, "一口价");
+  t = t.replace(/([^A-Za-z])y(\d)/g, "$1¥$2");
+  return t;
+}
+
+const PRICE_KEYS = ["一口价","到手价","现价","秒杀价","团购价","活动价","折后价","特价","售价"];
+const ORIG_KEYS  = ["原价","划线价","门市价","市场价"];
+const SAVE_KEYS  = ["立省","已省"];
+const NOISE      = /月售|已售|评分|人觉得|推荐|回头客|评价|年|月|日|\d{1,2}:\d{2}|MB\/S/;
+
+function amountFromLine(line) {
+  // ¥ 后面必须是纯数字，数字后不能紧跟字母/数字。
+  // 「¥1a3」= OCR 把 10.3 认成 1a3，必须整段作废——
+  // 截取其中一部分（只剩 1 或 3）会得到完全错的金额，比读不出来更糟。
+  const m = /¥\s*(\d{1,6}(?:[.·]\d{1,2})?)(?![\dA-Za-z])/.exec(line);
+  if (m) {
+    const v = parseFloat(m[1].replace("·", "."));
+    return isFinite(v) ? { v } : { v: null, why: "不是有效数字" };
+  }
+  if (line.includes("¥")) {
+    const tail = line.split("¥")[1].slice(0, 10);
+    return { v: null, why: "「" + tail + "」里数字混了字母，OCR 认错了" };
+  }
+  const m2 = /(\d{1,6}(?:[.·]\d{1,2})?)(?![\dA-Za-z])/.exec(line);
+  if (m2) {
+    const v = parseFloat(m2[1].replace("·", "."));
+    if (isFinite(v)) return { v };
+  }
+  return { v: null, why: "没找到数字" };
+}
+
+function parseProduct(text) {
+  const out = { suspicious: [] };
+  const lines = String(text).split(/\r?\n/).map(normProduct).filter(l => l.trim());
+  let price = null, original = null, saved = null, priceLine = "";
+
+  for (const line of lines) {
+    const looksPrice = PRICE_KEYS.some(k => line.includes(k)) ||
+                       (line.includes("价") && /\d/.test(line));
+    if (price === null && looksPrice) {
+      priceLine = line;
+      const r = amountFromLine(line);
+      if (r.v !== null && r.v > 0) price = r.v;
+      else out.suspicious.push("现价读不出来（" + r.why + "）");
+      continue;
+    }
+    if (original === null && ORIG_KEYS.some(k => line.includes(k))) {
+      const r = amountFromLine(line);
+      if (r.v !== null && r.v > 0) original = r.v;
+      else out.suspicious.push("原价读不出来（" + r.why + "）");
+      continue;
+    }
+    if (saved === null && SAVE_KEYS.some(k => line.includes(k))) {
+      const r = amountFromLine(line);
+      if (r.v !== null && r.v > 0) saved = r.v;
+      else out.suspicious.push("立省读不出来（" + r.why + "）");
+      continue;
+    }
+  }
+
+  // 原价回退：只认带 ¥ 且不含销量/时间的行
+  if (original === null && price !== null) {
+    for (const line of lines) {
+      if (line === priceLine || NOISE.test(line)) continue;
+      if (!line.includes("¥")) continue;
+      const r = amountFromLine(line);
+      if (r.v !== null && r.v > price && r.v < 100000) { original = r.v; break; }
+    }
+  }
+
+  // 商家名：价格行之前的短中文行（启发式，认不出就留空）
+  if (priceLine) {
+    const idx = lines.indexOf(priceLine);
+    for (let i = idx - 1; i >= 0; i--) {
+      const plain = lines[i].replace(/[^\u4e00-\u9fa5A-Za-z]/g, "");
+      if (plain.length >= 2 && plain.length <= 12 && /[\u4e00-\u9fa5]/.test(plain)) {
+        if (/推荐|评价|商品|描述|购物车|外卖|查看|首页/.test(plain)) continue;
+        out.merchant = plain;
+        break;
+      }
+    }
+  }
+
+  // 商品名：含常见食品后缀
+  for (const line of lines) {
+    if (NOISE.test(line)) continue;
+    const plain = line.replace(/\s+/g, "");
+    if (plain.length >= 3 && plain.length <= 30 &&
+        /蛋糕|奶茶|咖啡|拿铁|汉堡|披萨|套餐|炸鸡|寿司|果汁|饭|面|粥|汤|串/.test(plain)) {
+      out.product = plain;
+      break;
+    }
+  }
+
+  if (price !== null) out.price = price;
+  if (original !== null) out.original = original;
+  if (saved !== null) out.saved = saved;
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════
    3. OCR
    ═══════════════════════════════════════════════════════════ */
 
@@ -286,6 +403,7 @@ $("go").addEventListener("click", async () => {
   bar.style.width = "0%";
 
   const offers = [];
+  const products = [];
   const notes = [];
 
   try {
@@ -306,11 +424,21 @@ $("go").addEventListener("click", async () => {
       const pre = parseReceipt(data.text);
 
       if (pre.items === undefined) {
-        notes.push(`${plat}：没认出「商品小计」，可能不是结账页截图`);
+        // 不是结账页，试一下商品页（一口价那种）
+        const prod = parseProduct(data.text);
+        if (prod.price !== undefined) {
+          prod.platform = plat;
+          prod.raw = data.text;
+          prod.kind = "product";
+          products.push(prod);
+        } else {
+          notes.push(`${plat}：既不是结账页也不是商品页，没认出价格`);
+        }
         continue;
       }
       pre.platform = plat;
       pre.raw = data.text;
+      pre.kind = "checkout";
       offers.push(pre);
     }
     bar.style.width = "100%";
@@ -318,12 +446,25 @@ $("go").addEventListener("click", async () => {
     barwrap.style.display = "none";
 
     if (!offers.length) {
-      res.innerHTML = '<div class="err">没有识别出有效的结账页。</div>' +
+      if (products.length) {
+        renderProducts(products, notes);
+        return;
+      }
+      res.innerHTML = '<div class="err">没有识别出有效信息。</div>' +
         '<div class="detail">' + esc(notes.join("；")) + '</div>';
       return;
     }
 
     render(offers, notes);
+    if (products.length) {
+      const box = document.createElement("div");
+      box.style.marginTop = "20px";
+      box.innerHTML = '<div class="sub">另外识别到的商品页：</div>';
+      res.appendChild(box);
+      const tmp = document.createElement("div");
+      renderProducts(products, [], tmp);
+      box.innerHTML += tmp.innerHTML;
+    }
 
   } catch (e) {
     res.innerHTML = '<div class="err">识别失败：' + esc(e.message || e) + '</div>' +
@@ -335,6 +476,40 @@ $("go").addEventListener("click", async () => {
     barwrap.style.display = "none";
   }
 });
+
+function renderProducts(products, notes, target) {
+  const out = target || $("result");
+  let h = "";
+  products.forEach(p => {
+    h += '<div class="rank' + (p === products[0] ? ' first' : '') + '">';
+    h += '<div class="top"><span class="plat">' +
+         esc(p.merchant || "这个商品") + '</span>' +
+         '<span class="price">¥' + p.price.toFixed(2) + '</span></div>';
+    if (p.product) h += '<div class="detail">' + esc(p.product) + '</div>';
+    let d = "现价 " + p.price.toFixed(2);
+    if (p.original !== undefined) d += "（原价 " + p.original.toFixed(2) + "）";
+    if (p.saved !== undefined) d += "，平台标称立省 " + p.saved.toFixed(2);
+    h += '<div class="detail">' + esc(d) + '</div>';
+
+    if (p.suspicious && p.suspicious.length) {
+      h += '<div class="warn">⚠️ ' + esc(p.suspicious.join("；")) + '</div>';
+    }
+
+    h += '<ol class="steps">' +
+         '<li>这是商品页的价格，平台标的「一口价」通常已经是最低价</li>' +
+         '<li>想再省，去 App 的「我的 → 优惠券」看有没有能叠的红包</li>' +
+         '<li>要比价的话，在另外两家搜这个店名，再各截一张结账页传上来</li>' +
+         '</ol>';
+
+    if (p.raw) {
+      h += '<details style="margin-top:8px"><summary style="font-size:12px;color:var(--dim);cursor:pointer">看识别原文</summary>' +
+           '<div class="raw">' + esc(p.raw) + '</div></details>';
+    }
+    h += '</div>';
+  });
+  if (notes && notes.length) h += '<div class="detail">' + esc(notes.join("；")) + '</div>';
+  out.innerHTML = h;
+}
 
 function render(offersRaw, notes) {
   const shop = $("shop").value.trim();
