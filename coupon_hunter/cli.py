@@ -910,8 +910,10 @@ def _ask_platform_offer(platform: str):
 
     print()
     print(f"  ── {platform} ──")
-    print("     可以把结账页的文本粘进来，我自动认数字；不想粘就直接回车逐项填。")
-    print("     （粘贴多行后，敲一个空行结束）")
+    print("     三种填法，任选：")
+    print("       · 直接粘结账页文本（多行，敲空行结束）")
+    print("       · 输入截图路径，我用系统 OCR 读（例如 C:\\shot.png）")
+    print("       · 直接回车，逐项手填")
     # 注意：提示符那一行读进来的内容不能丢——它往往正是「商品小计」那一行。
     # 早先版本 `input("      > ")` 直接丢掉返回值，结果粘贴的第一行永远被吞掉。
     try:
@@ -921,7 +923,27 @@ def _ask_platform_offer(platform: str):
     rest = _read_pasted_block()
     pasted = first + "\n" + rest if first.strip() else rest
 
-    pre = parse_checkout_text(pasted) if pasted.strip() else {}
+    # 如果用户给的是一个存在的图片文件，走 OCR
+    pre = {}
+    if pasted.strip() and len(pasted.splitlines()) == 1:
+        maybe = pasted.strip().strip('"').strip("'")
+        from pathlib import Path as _P
+
+        if _P(maybe).suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp", ".webp") and _P(maybe).exists():
+            from .receipt import OcrError, ocr_image, parse_receipt
+
+            print(f"      正在识别截图：{maybe}")
+            try:
+                ocr_text = ocr_image(maybe)
+                pre = parse_receipt(ocr_text)
+                print("      OCR 读到：")
+                for ln in ocr_text.splitlines()[:10]:
+                    print(f"        {ln}")
+            except OcrError as e:
+                print(f"      ✗ {e}")
+
+    if not pre and pasted.strip():
+        pre = parse_checkout_text(pasted)
     if pre:
         bits = []
         label_map = [
@@ -1032,31 +1054,34 @@ def cmd_delivery(opts: dict) -> int:
     specs = opts.get("方案") or []
 
     if not specs:
-        print("  把餐厅的分享文本或链接粘进来（用来记店名，可以直接回车跳过）：")
-        try:
-            raw = input("  > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raw = ""
-        if raw:
-            shop, url = parse_share_text(raw)
-            if shop:
-                print(f"      ✓ 认出店名：{shop}")
-            elif url:
-                print("      （只认出链接，没认出店名）")
-            if not shop:
-                try:
-                    shop = input("      店名是什么？（可回车跳过）：").strip()
-                except (EOFError, KeyboardInterrupt):
-                    shop = ""
-
+        print("  逐个平台填数字。填几个比几个，一个都不填就退出。")
+        print("  每个平台都可以：粘结账页文本 / 给截图路径 / 直接手填。")
         print()
-        print("  现在逐个平台填数字。三个平台随便填几个，填几个比几个。")
-        print("  顺序建议：美团 → 淘宝闪购(饿了么) → 京东外卖")
         offers = []
         for platform in ("美团", "淘宝闪购(饿了么)", "京东外卖"):
             o = _ask_platform_offer(platform)
             if o:
                 offers.append(o)
+                # 店名等第一个平台填完再问，避免「第一问就卡住」
+                if not shop:
+                    try:
+                        raw = input("      这家店叫什么？（可回车跳过）：").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        raw = ""
+                    if raw:
+                        shop, _url = parse_share_text(raw)
+                        if not shop:
+                            shop = raw
+
+        if offers:
+            print()
+            try:
+                raw = input("  要不要现在就算？(Y/n)：").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                raw = "y"
+            if raw in ("n", "no", "否", "不"):
+                print()
+                return 0
     else:
         offers = []
         for spec in specs:
@@ -1078,8 +1103,32 @@ def cmd_delivery(opts: dict) -> int:
         print("  只填了一个平台，没法横向比，但可以给你算到手价：")
 
     results = compare(offers)
+
+    # 给每个平台生成「怎么点出来」的操作步骤——这是用户要的核心：
+    # 不代下单，但要告诉他怎么操作最省。
+    from .advice import build_advice, render_comparison as render_advice
+    from .stack_cli import SpecError, parse_coupon
+    from .stacking import best as _best
+
+    advices = []
+    for offer, res in zip(offers, results):
+        # 重新算一遍以拿到 stacking.Result（含 confidence、order_matters 等）
+        try:
+            coupons_obj = list(offer.all_coupons())
+            sr = _best(offer.items, coupons_obj, "外卖",
+                       has={"plus"} if offer.member else set(),
+                       threshold_base="base")
+        except Exception:
+            continue
+        advices.append(build_advice(
+            offer.platform, sr, coupons_obj,
+            has_member=offer.member,
+        ))
+
     print()
     print(render_comparison(results, shop))
+    if advices:
+        print(render_advice(advices))
     print()
     return 0
 
