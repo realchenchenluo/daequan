@@ -51,6 +51,8 @@ HELP = """
                             一次性算，不进交互
   比价                      同一件商品在几个平台的到手价对比，排出最便宜的那个
   外卖比价                  同一家外卖在美团/饿了么/京东，算上券和配送费谁最便宜
+  关注                      看关注清单（券自动更新，到目标价就提醒）
+  关注 --名 "某耳机" --价 "京东=399,拼多多=359" --目标 350   加一个
 
 麦当劳官方券（全项目唯一的官方接口，Token 免费）：
   麦当劳                   连一下官方服务，看能领到什么券（诊断用）
@@ -97,6 +99,11 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
         "券": [],
         "方案": [],
         "plus": False,
+        "目标": None,
+        "类型": None,
+        "备注": None,
+        "删除": None,
+        "清空": False,
         "名": None,
         "方案": None,
         "端口": None,
@@ -176,11 +183,30 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
             opts["调用"] = nxt
             i += 2
         elif a in ("--价", "--price"):
+            # 两种用法：--价 399（叠券用数字）；--价 "京东=399,拼多多=359"（关注清单用）
             try:
                 opts["价"] = float(nxt)
             except (TypeError, ValueError):
+                opts["价"] = nxt
+            i += 2
+        elif a in ("--目标", "--target"):
+            try:
+                opts["目标"] = float(nxt)
+            except (TypeError, ValueError):
                 pass
             i += 2
+        elif a in ("--类型", "--kind"):
+            opts["类型"] = nxt
+            i += 2
+        elif a in ("--备注", "--note"):
+            opts["备注"] = nxt
+            i += 2
+        elif a in ("--删除", "--rm"):
+            opts["删除"] = nxt
+            i += 2
+        elif a in ("--清空", "--clear"):
+            opts["清空"] = True
+            i += 1
         elif a in ("--券", "--coupon"):
             # 可重复传：--券 "满减,300,50" --券 "折扣,0.9"
             if not isinstance(opts.get("券"), list):
@@ -464,6 +490,21 @@ def cmd_auto(opts: dict | None = None) -> int:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(render(coupons, result), encoding="utf-8")
         log(f"成功：抓到 {len(coupons)} 条，已写入 {out_path}")
+
+        # 顺便跑一遍关注清单，把命中的记进日志——这是「全自动」的关键一环：
+        # 你不需要主动查，跑完就知道有没有到目标价的
+        try:
+            from . import watch
+
+            if watch.load():
+                hits = [r for r in watch.check_all(coupons) if r.hit]
+                if hits:
+                    for h in hits:
+                        log(f"🔔 达到目标价：{h.summary()}")
+                else:
+                    log("关注清单：暂无达到目标价的")
+        except Exception as e:
+            log(f"关注清单检查失败：{type(e).__name__}: {e}")
         for n in result.notes:
             log(f"  提示：{n}")
         return 0
@@ -1043,6 +1084,84 @@ def cmd_delivery(opts: dict) -> int:
     return 0
 
 
+
+def cmd_watch(opts: dict) -> int:
+    """关注清单：录一次，之后每次搜券/定时任务都自动帮你算和提醒。"""
+    from . import watch
+
+    print()
+
+    if opts.get("清空"):
+        watch.clear()
+        print("  清单已清空。")
+        print()
+        return 0
+
+    if opts.get("删除"):
+        ok = watch.remove(opts["删除"])
+        print("  已删除。" if ok else f"  没找到「{opts['删除']}」。")
+        print()
+        return 0
+
+    # 新增
+    name = opts.get("名")
+    if name:
+        from .watch import WatchItem
+
+        prices = {}
+        raw_prices = opts.get("价") or ""
+        for seg in str(raw_prices).split(","):
+            seg = seg.strip()
+            if not seg:
+                continue
+            if "=" in seg:
+                plat, val = seg.split("=", 1)
+            elif ":" in seg:
+                plat, val = seg.split(":", 1)
+            else:
+                print(f"  ✗ 「{seg}」格式不对，应该是 平台=价格")
+                return 1
+            try:
+                prices[plat.strip()] = float(val.strip())
+            except ValueError:
+                print(f"  ✗ 「{val}」不是价格")
+                return 1
+
+        item = WatchItem(
+            name=name,
+            kind=opts.get("类型") or "商品",
+            target=opts.get("目标"),
+            note=opts.get("备注") or "",
+            prices=prices,
+        )
+        watch.add(item)
+        print(f"  已加入关注清单：{name}")
+        for plat, val in prices.items():
+            print(f"    {plat}: {val:.2f}")
+        if item.target is not None:
+            print(f"    目标价：{item.target:.2f}（低于它就提醒）")
+        print()
+        return 0
+
+    # 只检查：先抓一遍最新券，再匹配到清单上
+    from .config import load_config
+    from .rank import dedupe, rank
+    from .sources import fetch_all
+
+    sources = load_config().get("sources") or []
+    print("  正在抓最新券……")
+    try:
+        fetched = dedupe(rank(fetch_all(sources).coupons))
+        print(f"  拿到 {len(fetched)} 条券，开始匹配。")
+    except Exception as e:
+        fetched = []
+        print(f"  抓券失败（{type(e).__name__}），只用你录的券来算。")
+
+    results = watch.check_all(fetched)
+    print(watch.render_report(results))
+    return 0
+
+
 def cmd_menu(sources: list[dict]) -> int:
     """双击 .bat 时进来的交互菜单。
 
@@ -1140,6 +1259,7 @@ _COMMANDS = {
     "麦当劳": "mcd", "mcd": "mcd", "麦当劳诊断": "mcd",
     "叠券": "stack", "凑单": "stack", "实付": "stack", "stack": "stack",
     "外卖比价": "delivery", "外卖": "delivery", "点外卖": "delivery", "delivery": "delivery",
+    "关注": "watch", "关注清单": "watch", "监控": "watch", "watch": "watch",
     "比价": "compare", "compare": "compare",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
@@ -1201,6 +1321,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_compare(opts)
     if cmd == "delivery":
         return cmd_delivery(opts)
+    if cmd == "watch":
+        return cmd_watch(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":

@@ -38,6 +38,7 @@ python run.py 搜券            # 命令行里直接搜
 python run.py 叠券            # 算「叠完所有券实际付多少」
 python run.py 比价            # 同一件商品在几个平台的到手价对比
 python run.py 外卖比价         # 同一家外卖在美团/饿了么/京东谁最便宜
+python run.py 关注             # 关注清单：券自动更新，到目标价提醒你
 python run.py 登录 && python run.py 领券    # 领美团专属大额券
 ```
 
