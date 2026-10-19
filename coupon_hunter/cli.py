@@ -104,6 +104,7 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
         "备注": None,
         "删除": None,
         "清空": False,
+        "截图": [],
         "名": None,
         "方案": None,
         "端口": None,
@@ -224,6 +225,12 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
             if not isinstance(opts.get("方案"), list):
                 opts["方案"] = []
             opts["方案"].append(nxt)
+            i += 2
+        elif a in ("--截图", "--shot"):
+            # 外卖比价用：--截图 "美团=D:\\a.png"
+            if not isinstance(opts.get("截图"), list):
+                opts["截图"] = []
+            opts["截图"].append(nxt)
             i += 2
         else:
             i += 1
@@ -1050,10 +1057,64 @@ def cmd_delivery(opts: dict) -> int:
 
     print()
 
-    shop = ""
+    shop = opts.get("名") or ""
     specs = opts.get("方案") or []
+    shots = opts.get("截图") or []
 
-    if not specs:
+    from .receipt import describe as describe_receipt
+
+    if shots:
+        # 一次性模式：--截图 "美团=D:\a.png" --截图 "淘宝闪购=D:\b.png"
+        from .receipt import OcrError, ocr_image, parse_receipt
+        from .stack_cli import SpecError, parse_coupon_list
+
+        offers = []
+        for spec in shots:
+            if "=" not in spec:
+                print(f"  ✗ 「{spec}」格式不对，应该是 平台=图片路径")
+                return 1
+            platform, path = spec.split("=", 1)
+            platform, path = platform.strip(), path.strip().strip('"').strip("'")
+            print(f"  识别 {platform}：{path}")
+            try:
+                text = ocr_image(path)
+            except OcrError as e:
+                print(f"    ✗ {e}")
+                continue
+
+            pre = parse_receipt(text)
+            print(f"    {describe_receipt(pre)}")
+            if "items" not in pre:
+                print("    ✗ 没认出菜品小计，跳过这个平台")
+                continue
+
+            # 抓到的券不参与计算（面额是从标题猜的），只用用户明确录入的
+            shop_coupons = []
+            if pre.get("shop_discount"):
+                shop_coupons.append(
+                    f"满减,{pre['items']:g},{pre['shop_discount']:g}"
+                )
+            plat_coupons = []
+            if pre.get("coupon"):
+                plat_coupons.append(f"满减,{pre['items']:g},{pre['coupon']:g}")
+
+            from .delivery import Offer
+
+            offers.append(Offer(
+                platform=platform,
+                items=pre["items"],
+                delivery=pre.get("delivery", 0.0),
+                packing=pre.get("packing", 0.0),
+                shop_discounts=parse_coupon_list(shop_coupons),
+                coupons=parse_coupon_list(plat_coupons),
+                red_packet=pre.get("red_packet", 0.0),
+                member=bool(pre.get("member")),
+                member_delivery_free=bool(pre.get("member")),
+                expected_final=pre.get("final"),
+            ))
+        print()
+
+    elif not specs:
         print("  逐个平台填数字。填几个比几个，一个都不填就退出。")
         print("  每个平台都可以：粘结账页文本 / 给截图路径 / 直接手填。")
         print()
