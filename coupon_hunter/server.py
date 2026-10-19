@@ -201,19 +201,69 @@ class Handler(BaseHTTPRequestHandler):
 # ──────────────────────────────────────────────────────────
 
 def get_lan_ip() -> str:
-    """拿到本机在局域网里的地址。
+    """拿到本机在局域网里的真实地址。
 
-    做法是连一个外网 UDP 地址（不会真的发数据），让系统告诉我们出口网卡是谁。
-    失败就退回 localhost —— 说明这台机器现在没联网。
+    不能用「连 8.8.8.8 看出口网卡」那种取巧办法——实测踩过坑：
+    本机装了代理（TUN 模式），出口网卡是代理的虚拟网卡，拿到的地址是
+    198.18.0.1（199.18.0.0/15 是代理软件常用的假 IP 段），
+    把这个地址给手机，手机根本连不上。
+
+    正确做法：枚举本机所有网卡地址，挑一个**真实的内网地址**。
+    优先级：192.168.x > 10.x > 172.16-31.x，排除 198.18/15 和回环。
     """
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    import ipaddress
+
+    def is_usable(ip: str) -> bool:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if addr.is_loopback or addr.is_link_local:
+            return False
+        # 代理的假 IP 段（RFC 2544 基准测试段），手机连不上
+        if ip.startswith("198.18.") or ip.startswith("198.19."):
+            return False
+        return addr.is_private
+
+    candidates: list[str] = []
+
+    # 办法一：解析主机名（Windows 上通常能拿到所有网卡地址）
     try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if is_usable(ip) and ip not in candidates:
+                candidates.append(ip)
     except Exception:
+        pass
+
+    # 办法二：UDP 探测（作为补充，过滤掉假 IP）
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if is_usable(ip) and ip not in candidates:
+                candidates.append(ip)
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    if not candidates:
         return "127.0.0.1"
-    finally:
-        s.close()
+
+    # 排序：192.168 优先（家用路由器最常见），其次 10.x，再其次 172.16-31
+    def rank(ip: str) -> int:
+        if ip.startswith("192.168."):
+            return 0
+        if ip.startswith("10."):
+            return 1
+        if ip.startswith("172."):
+            return 2
+        return 3
+
+    candidates.sort(key=rank)
+    return candidates[0]
 
 
 def create_server(port: int, host: str, ttl: int, title: str) -> ThreadingHTTPServer:
