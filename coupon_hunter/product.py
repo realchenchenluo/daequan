@@ -315,7 +315,17 @@ def _merchant_from_blocks(blocks, price_y: float | None) -> str:
             continue
         if any(k in plain for k in ("推荐", "评价", "商品", "描述", "购物车",
                                     "外卖", "查看", "首页", "配送", "自提",
-                                    "预订", "拼单", "更省", "好吃", "美味")):
+                                    "预订", "拼单", "更省", "好吃", "美味",
+                                    # 促销文案，实测被当成过商家名
+                                    "再买", "再减", "凑单", "满减", "已减",
+                                    "补贴", "红包", "券后", "立减", "优惠",
+                                    # 商品描述里的词，实测被当成过商家名
+                                    "吃", "喝", "口感", "过瘾", "新鲜", "香甜",
+                                    "浓郁", "特别", "软糯", "好吃")):
+            continue
+        # 只在价格上方的近处找。实测不限距离时会把瓶身 logo「百事可乐」
+        # 当成商家名（它在价格上方 380px 的图片区）。
+        if price_y - y > 320:
             continue
         if y > best_y:          # 越靠近价格越可信
             best, best_y = plain, y
@@ -424,6 +434,10 @@ def parse_product_blocks(blocks) -> dict:
         for j, (t2, x2, y2, w2, h2) in enumerate(blocks):
             if j in used:
                 continue
+            # 必须是纯金额块，**而且要带 ¥**。
+            # 实测不要求 ¥ 时，会把状态栏的「98」（通知数）当成原价。
+            if "¥" not in t2 and "￥" not in t2:
+                continue
             m = _AMOUNT_BLOCK.fullmatch(t2.strip())
             if not m:
                 continue
@@ -431,6 +445,8 @@ def parse_product_blocks(blocks) -> dict:
             if v is None or not (price < v < 100000):
                 continue
             dy = abs(y2 - (price_y or y2)) if price_y is not None else 0
+            if dy > 1200:
+                continue
             if dy < best_dy:
                 best_dy = dy
                 best = (v, j)
