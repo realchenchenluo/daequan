@@ -160,8 +160,10 @@ def parse_product_page(text: str) -> dict:
     # 这里补一刀：找带 ¥、不含销量/时间、且比现价大的行。
     if original is None and price is not None:
         for line in lines:
-            if line == price_line or _NOISE.search(line) or "¥" not in line:
+            if line == price_line or "¥" not in line:
                 continue
+            # 带「月售」的行也允许——真实截图常见「￥29.8 月售300+」这种
+            # 价格和销量挤在一行的情况。只要带 ¥ 且金额比现价大就收。
             v, _why = _amount_from_line(line)
             if v is not None and price < v < 100000:
                 original = v
@@ -198,22 +200,44 @@ def parse_product_page(text: str) -> dict:
             result["product"] = plain
             break
 
+    # ── 用算术关系纠正 OCR ──
+    # 三者满足：原价 − 立省 = 现价。任意知道两个，就能算出第三个，
+    # 比依赖 OCR 读第三个数可靠得多。
+    # 实测动机：「￥29.8 1月售300+」去空格后粘成「29.81」，OCR 去读会读出 29.81。
+    derived = []
+    if price is not None and saved is not None:
+        calc = round(price + saved, 2)
+        # 只要两个都有，就直接用算术结果——OCR 读的第三个数一律不采信。
+        # 实测「￥29.8 1月售300+」去空格后粘成「29.81」，OCR 会读错 0.01。
+        if original is not None and abs(original - calc) > 0.5:
+            result["suspicious"].append(
+                f"原价 OCR 读成 {original:g}，但 现价+立省 = {calc:g}，已按后者算"
+            )
+        original = calc
+        derived.append("original")
+    elif price is not None and original is not None:
+        calc = round(original - price, 2)
+        if calc > 0:
+            if saved is not None and abs(saved - calc) > 0.5:
+                result["suspicious"].append(
+                    f"立省 OCR 读成 {saved:g}，但 原价−现价 = {calc:g}，已按后者算"
+                )
+            saved = calc
+            derived.append("saved")
+        else:
+            # 原价比现价还低，推出负数没意义——说明数字读错了，不硬算
+            result["suspicious"].append(
+                f"原价 {original:g} 不比现价 {price:g} 高，可能读错了"
+            )
+
     if price is not None:
         result["price"] = price
     if original is not None:
         result["original"] = original
     if saved is not None:
         result["saved"] = saved
-
-    # 一致性检查：原价 − 立省 应该 ≈ 现价。对不上说明有数字读错了。
-    if price is not None and original is not None and saved is not None:
-        if abs((original - saved) - price) > 0.5:
-            result["suspicious"].append(
-                f"原价 {original:g} − 立省 {saved:g} = {original - saved:g}，"
-                f"和现价 {price:g} 对不上，可能有数字认错了"
-            )
-    elif price is not None and original is not None and original <= price:
-        result["suspicious"].append(f"原价 {original:g} 不比现价 {price:g} 高，可能读错了")
+    if derived:
+        result["derived"] = derived
 
     return result
 

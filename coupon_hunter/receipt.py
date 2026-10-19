@@ -47,6 +47,84 @@ class OcrError(Exception):
     """OCR 失败。message 直接给用户看。"""
 
 
+# ──────────────────────────────────────────────────────────
+# OCR 引擎选择
+# ──────────────────────────────────────────────────────────
+#
+# 实测同一张真实截图（美团商品页）三个引擎：
+#   Windows 自带   「一囗价￥19·5」「立省￥1a3」「您盐芝士蛋糕」  —— 错得较多
+#   tesseract.js   「一0价y19.5」「海盐艺士蛋炉」                —— 更差
+#   RapidOCR       「一口价￥19.5」「立省￥10.3」「海盐芝士蛋糕(超清爽)」 —— 全对
+#
+# 所以优先用 RapidOCR；没装就退回 Windows 自带。
+# RapidOCR 是可选依赖（不装也能用，只是准确率低一些）。
+
+_RAPID_ENGINE = None
+_RAPID_TRIED = False
+
+
+def _get_rapid():
+    """惰性加载 RapidOCR。第一次加载会初始化 ONNX 模型（约 1 秒）。"""
+    global _RAPID_ENGINE, _RAPID_TRIED
+    if _RAPID_TRIED:
+        return _RAPID_ENGINE
+    _RAPID_TRIED = True
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _RAPID_ENGINE = RapidOCR()
+    except Exception:
+        _RAPID_ENGINE = None
+    return _RAPID_ENGINE
+
+
+def has_rapid() -> bool:
+    """本机能不能用 RapidOCR（给诊断命令用）。"""
+    return _get_rapid() is not None
+
+
+_LABEL_WORDS = (
+    "商品小计", "菜品小计", "商品合计", "菜品合计", "餐品小计",
+    "商品金额", "菜品金额", "小计", "包装费", "打包费", "餐盒费",
+    "包装", "打包", "配送费", "配送", "运费", "店铺满减", "店铺优惠",
+    "商家优惠", "满减", "商品优惠", "优惠券", "平台券", "代金券",
+    "红包", "立减", "抵扣", "实付", "合计", "总计", "应付", "支付",
+    "一口价", "到手价", "现价", "原价", "立省", "已省", "售价", "特价",
+)
+
+_AMOUNT_ONLY = re.compile(r"[¥￥]?\s*\d{1,6}(?:[.·]\d{1,2})?\s*元?")
+
+
+def _merge_label_value(lines: list[str]) -> list[str]:
+    """把被拆成两行的「标签」和「金额」合并回去。
+
+    RapidOCR 是按文本块识别的，常把「商品小计」和「45.00」分成两行
+    （中间空隙较大）。不合并的话，按行匹配关键词就找不到金额，
+    整个解析会失败。Windows OCR 一般不会这样，但合并掉也无害。
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        cur = lines[i].strip()
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if cur and nxt and _AMOUNT_ONLY.fullmatch(nxt) and any(k in cur for k in _LABEL_WORDS):
+            out.append(cur + " " + nxt)
+            i += 2
+            continue
+        out.append(cur)
+        i += 1
+    return out
+
+
+def _ocr_rapid(path: Path) -> str:
+    engine = _get_rapid()
+    result, _elapse = engine(str(path))
+    if not result:
+        return ""
+    lines = [str(item[1]).strip() for item in result if len(item) >= 2 and str(item[1]).strip()]
+    return chr(10).join(_merge_label_value(lines))
+
+
 def ocr_image(path: str | Path) -> str:
     """对图片做 OCR，返回识别到的文本（每行一条）。
 
@@ -55,6 +133,15 @@ def ocr_image(path: str | Path) -> str:
     p = Path(path)
     if not p.exists():
         raise OcrError(f"找不到图片：{p}")
+
+    # 优先 RapidOCR：实测准确率明显高于系统自带（错字少一个数量级）
+    if has_rapid():
+        try:
+            text = _ocr_rapid(p)
+            if text.strip():
+                return text
+        except Exception:
+            pass  # RapidOCR 出问题就退回系统 OCR，不让整个流程挂掉
 
     if sys.platform != "win32":
         raise OcrError(

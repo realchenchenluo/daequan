@@ -102,11 +102,29 @@ def _():
     assert any("不比现价" in s for s in info["suspicious"]), info["suspicious"]
 
 
-@case("原价−立省≠现价要报警")
+@case("三个数字矛盾时，用算术关系纠正并报警")
 def _():
+    # 19.5 + 5 = 24.5 ≠ 29.8，说明原价读错了。
+    # 工具的取舍：以「现价+立省」为准（这两个是用户最关心的数），
+    # 并把 OCR 读到的原价差异说出来。
     info = parse_product_page("一口价 ¥19.5\n原价 ¥29.8\n立省 ¥5")
-    # 29.8 - 5 = 24.8 ≠ 19.5
-    assert any("对不上" in s for s in info["suspicious"]), info["suspicious"]
+    assert info["original"] == 24.5, f"应按 现价+立省 算出 24.5，实际 {info.get('original')}"
+    assert any("已按后者算" in s for s in info["suspicious"]), info["suspicious"]
+
+
+@case("原价由 现价+立省 推出（不依赖 OCR 读第三个数）")
+def _():
+    # 实测：「￥29.8 1月售300+」去空格后粘成「29.81」，OCR 会读错 0.01
+    info = parse_product_page("一口价 ¥19.5\n立省 ¥10.3\n原价 ¥29.81")
+    assert info["original"] == 29.8, f"应纠正为 29.8，实际 {info.get('original')}"
+    assert info["price"] == 19.5 and info["saved"] == 10.3
+
+
+@case("原价比现价低时不硬算负数立省")
+def _():
+    info = parse_product_page("一口价 ¥50\n原价 ¥30")
+    assert "saved" not in info, f"不该推出负的立省：{info.get('saved')}"
+    assert any("不比现价" in s for s in info["suspicious"])
 
 
 @case("什么都没有时不崩、不乱猜")

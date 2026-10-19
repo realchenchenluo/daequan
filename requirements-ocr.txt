@@ -1,0 +1,10 @@
+# 可选：装了这个，截图识别准确率会明显提高。
+#
+# 实测同一张真实美团商品页截图，三个引擎的差距：
+#   Windows 自带   「一囗价￥19·5」「立省￥1a3」「您盐芝士蛋糕」   错得较多
+#   tesseract.js   「一0价y19.5」「海盐艺士蛋炉」               更差
+#   RapidOCR       「一口价￥19.5」「立省￥10.3」「海盐芝士蛋糕(超清爽)」  全对
+#
+# 安装：python -m pip install -r requirements-ocr.txt
+# 不装也能用，会自动退回 Windows 自带的 OCR（只是准确率低一些）。
+rapidocr_onnxruntime>=1.3

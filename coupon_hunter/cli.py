@@ -1308,7 +1308,13 @@ def cmd_product(opts: dict) -> int:
 
     path = str(path).strip().strip('"').strip("'")
 
+    from .receipt import has_rapid
+
+    engine_name = "RapidOCR（高准确率）" if has_rapid() else "Windows 自带 OCR（准确率一般）"
     print(f"  识别：{path}")
+    print(f"  引擎：{engine_name}")
+    if not has_rapid():
+        print("        想更准：python -m pip install -r requirements-ocr.txt")
     try:
         text = ocr_image(path)
     except OcrError as e:
