@@ -54,7 +54,7 @@ def _():
     info = parse_product_page(WIN_OCR)
     # 「立省￥1a3」里 10.3 被认成 1a3，不能截成 1 或 3
     assert "saved" not in info, f"不该猜出立省金额：{info.get('saved')}"
-    assert any("立省" in s and "认错" in s for s in info["suspicious"]), info["suspicious"]
+    assert any("立省" in s and ("认错" in s or "认坏" in s) for s in info["suspicious"]), info["suspicious"]
 
 
 @case("tesseract.js：一口价被认成「一0价 y19.5」也能读出价格")

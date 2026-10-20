@@ -77,7 +77,8 @@ _SAVE_KEYS = ("立省", "已省", "已补", "补贴")
 # 明显不是价格的文本
 _NOISE = re.compile(
     r"月售|已售|评分|人觉得|推荐|回头客|评价|浏览|好评|折扣$|"
-    r"\d{1,2}:\d{2}|MB/|低价热卖|超级补贴|限购|先享后付|凑单|配送费"
+    r"\d{1,2}:\d{2}|MB/|低价热卖|超级补贴|限时抢购|抢购|秒杀|热卖|限购|"
+    r"先享后付|凑单|配送费|必选品|打包费"
 )
 
 # 整块就是一个金额（可带 ¥、起、元后缀）。用来判断「这个文本块是不是纯数字」。
@@ -86,6 +87,11 @@ _AMOUNT_BLOCK = re.compile(r"^[¥￥]?\s*(\d{1,6}(?:[.·]\d{1,2})?)\s*[起元^�
 # 行内金额：¥ 后面必须是纯数字，且数字后不能紧跟字母/数字。
 _YEN_AMOUNT = re.compile(r"¥\s*(\d{1,6}(?:[.·]\d{1,2})?)(?![\dA-Za-z])")
 _FALLBACK_NUM = re.compile(r"(\d{1,6}(?:[.·]\d{1,2})?)(?![\dA-Za-z])")
+# 「1S」「l9.5」「¥8.x」这类：整行看着就是金额，但混进了字母。
+# 这是 OCR 把数字认成字母了，必须提示，不能当没看见。
+_MANGLED_AMOUNT = re.compile(
+    r"^[¥￥]?\s*[0-9A-Za-z]{1,10}(?:[.·][0-9A-Za-z]{1,3})?\s*[起元^！!]*$")
+_MANGLED_WITH_YEN = re.compile(r"[¥￥]\s*\d*[A-Za-z]\d*(?:[.·]\d+)?")
 
 
 def _clean_amount(raw: str) -> float | None:
@@ -101,12 +107,17 @@ def _amount_from_line(line: str) -> tuple[float | None, str]:
     「¥1a3」这类数字混字母的整段作废——截取其中一部分（只剩 1 或 3）
     会得到完全错的金额，比读不出来更糟。
     """
-    m = _YEN_AMOUNT.search(line)
-    if m:
-        v = _clean_amount(m.group(1))
-        if v is not None:
-            return v, ""
-        return None, "不是有效数字"
+    # ¥ 后取一整段 token，要求它**整体**是数字。
+    # 实测「¥8.x」「¥1a3」这种半坏的，用前缀匹配会得到 8 和 1，
+    # 看着像正常价格，比读不出来更危险。
+    tm = re.search(r"[¥￥]([0-9A-Za-z.·]+)", line)
+    if tm:
+        token = tm.group(1).rstrip(".")
+        if re.fullmatch(r"\d{1,6}(?:[.·]\d{1,2})?", token):
+            v = _clean_amount(token)
+            if v is not None:
+                return v, ""
+        return None, f"「{token}」不是完整数字，OCR 认坏了"
 
     if "¥" in line:
         tail = line.split("¥", 1)[1][:10]
@@ -195,7 +206,11 @@ def _split_block(text: str):
     labels.sort()
 
     out = []
-    amount_re = re.compile(r"¥?\s*(\d{1,6}(?:[.·]\d{1,2})?)(?![\dA-Za-z])")
+    # 前后都不能紧挨字母：
+    #   「¥1a3」里的 1（后面是 a）和 3（前面是 a）都要排除。
+    # 早先只有后向断言，导致 3 被单独当成「省了 3 元」。
+    amount_re = re.compile(
+        r"(?<![A-Za-z\d])\s*¥?\s*(\d{1,6}(?:[.·]\d{1,2})?)(?![\dA-Za-z])")
     amount_count = len(list(amount_re.finditer(t)))
     # 逐个金额，找它前面最近的标签
     for m in amount_re.finditer(t):
@@ -454,6 +469,25 @@ def parse_product_blocks(blocks) -> dict:
             original = best[0]
             used.add(best[1])
 
+    # ── 用「原价-优惠」反推现价 ──
+    # 这是最强的一致性校验：三者必须满足 现价 = 原价 - 优惠。
+    # 实测「￥35起 / ...噪音... / 一口价|补贴￥7.1 / ￥42.1」这种，
+    # 现价会被错认成 42.1，而 42.1-7.1=35，正好在页面里能找到。
+    if original is not None and saved is not None and original > saved:
+        want = round(original - saved, 2)
+        if price is None or abs(price - want) > 0.01:
+            for line in merged:
+                if not _is_amount_only(line):
+                    continue
+                v, _why = _amount_from_line(line)
+                if v is not None and abs(v - want) <= 0.02:
+                    if price is not None and abs(price - want) > 0.01:
+                        result["suspicious"].append(
+                            f"现价读成 {price:g}，但 原价−优惠 = {want:g}，已按后者算"
+                        )
+                    price = want
+                    break
+
     # ── 算术自洽 ──
     derived = []
     if price is not None and saved is not None and price > 0:
@@ -496,62 +530,201 @@ def parse_product_blocks(blocks) -> dict:
 # 按行解析（退路，用于纯文本）
 # ──────────────────────────────────────────────────────────
 
+def _is_label_only(s: str) -> bool:
+    """这一行只有**价格/原价**标签、没有数字（「折后价！」）。
+
+    刻意不把「立省/已补/补贴」算进来。实测放开会出事：
+      · 「超级补贴」这种横幅被当成标签，和下一行的数字合并，
+        把现价算成了优惠额
+      · 京东的「一口价|已补￥x」和上一行「￥15起」合并后，
+        金额跑到「已补」后面，15 被当成优惠额
+    优惠额的金额在真实页面里基本都和标签同一行，不需要合并。
+    """
+    if re.search(r"\d", s):
+        return False
+    # 同时含优惠标签的不合并：京东的「一口价|已补￥x」如果和上一行「￥15起」
+    # 合并，金额会跑到「已补」后面，15 就被当成优惠额了（实测）。
+    if any(k in s for k in _SAVE_KEYS):
+        return False
+    return any(k in s for k in _PRICE_KEYS + _ORIGINAL_KEYS)
+
+
+def _is_amount_only(s: str) -> bool:
+    return bool(_AMOUNT_BLOCK.fullmatch(s.strip()))
+
+
+def _merge_adjacent(lines: list[str]) -> list[str]:
+    """把「标签行」和它对应的「金额行」合并成一行。
+
+    做法是**两遍扫描**：
+      第一遍：每个标签行在 ±3 行内找纯金额，取最小的那个认领
+      第二遍：按原顺序输出，标签行替换成「标签 金额」，被认领的金额行跳过
+
+    为什么不能一边扫一边合并：实测「28.47 / 98 / 折后价！」这种，
+    顺序扫到 98 时会抢先和后面的标签合并，把状态栏的通知数当成价格。
+    先让标签认领最小的那个才对。
+    """
+    n = len(lines)
+    claimed: dict[int, tuple[str, int]] = {}
+
+    for i, line in enumerate(lines):
+        if not _is_label_only(line):
+            continue
+        cands = []
+        for d in list(range(1, 4)) + list(range(-1, -4, -1)):
+            j = i + d
+            if not (0 <= j < n):
+                continue
+            cand = lines[j]
+            if _is_amount_only(cand):
+                v, _why = _amount_from_line(cand)
+                if v is not None and 0 < v < 100000:
+                    cands.append((v, cand, j))
+            elif _is_label_only(cand):
+                break
+        if cands:
+            v, best, j = min(cands, key=lambda c: c[0])
+            claimed[i] = (best, j)
+
+    used = {j for _b, j in claimed.values()}
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if i in claimed:
+            out.append(line + " " + claimed[i][0])
+        elif i in used:
+            continue
+        else:
+            out.append(line)
+    return out
+
+
 def parse_product_page(text: str) -> dict:
     """从纯文本（OCR 输出或手工粘贴）里抽信息。
 
-    这是没有坐标时的退路。有坐标请优先用 parse_product_blocks。
+    没有坐标时的退路。逻辑和坐标版保持一致：
+      1. 先把被拆开的「标签行 / 金额行」合并
+      2. 再用 _split_block 做「块内配对」（能处理一行里多个标签）
+      3. 最后统一做算术自洽
     """
     result: dict = {"suspicious": [], "raw_lines": []}
     if not text:
         return result
 
     lines = [_norm(l) for l in str(text).splitlines() if l.strip()]
-    result["raw_lines"] = lines
 
-    price = original = saved = None
-    price_line = ""
+    # 先剔纯噪音，**再**合并——顺序不能反。
+    # 实测反过来的话，「9.9 / 23:11 / 折后价！」里的噪音行会挡住合并，
+    # 导致价格和标签配不上。
+    def _is_pure_noise(s: str) -> bool:
+        if "¥" in s:
+            return False
+        # 时间一定是噪音（状态栏的 23:11）
+        if re.search(r"\d{1,2}:\d{2}", s):
+            return True
+        # 带数字的行可能是数据，别乱删
+        if re.search(r"\d", s):
+            return False
+        # 没数字又命中噪音词 → 是横幅/说明文字（超级补贴、限时抢购）
+        return bool(_NOISE.search(s))
 
-    for line in lines:
-        # 现价
-        if price is None and (any(k in line for k in _PRICE_KEYS)
-                              or ("价" in line and re.search(r"\d", line))):
-            price_line = line
-            v, why = _amount_from_line(line)
-            if v is not None and 0 < v < 100000:
-                price = v
-            else:
-                result["suspicious"].append(f"现价读不出来（{why}）：「{line}」")
-            continue
+    cleaned = [l for l in lines if not _is_pure_noise(l)]
+    merged = _merge_adjacent(cleaned)
+    result["raw_lines"] = merged
 
-        # 原价
-        if original is None and any(k in line for k in _ORIGINAL_KEYS):
-            v, why = _amount_from_line(line)
-            if v is not None and 0 < v < 100000:
+    price = None
+    price_prio = -1
+    original = None
+    saved = None
+
+    for line in merged:
+        for kind, v, prio in _split_block(line):
+            if kind == "price":
+                if prio > price_prio:
+                    price, price_prio = v, prio
+            elif kind == "original" and original is None:
                 original = v
-            else:
-                result["suspicious"].append(f"原价读不出来（{why}）：「{line}」")
-            continue
-
-        # 优惠额
-        if saved is None and any(k in line for k in _SAVE_KEYS):
-            v, why = _amount_from_line(line)
-            if v is not None and 0 < v < 100000:
+            elif kind == "save" and saved is None:
                 saved = v
-            else:
-                result["suspicious"].append(f"优惠额读不出来（{why}）：「{line}」")
-            continue
 
-    # 原价回退：带 ¥、且比现价大的行（允许带「月售」）
+    # 价格标签没带金额时（如「一口价」单独一行，金额在上一行或下一行），
+    # 往相邻行找一个纯金额。距离最多 2 行——再远就是别的东西了。
+    if price is None:
+        for i, line in enumerate(merged):
+            if not any(k in line for k in _PRICE_KEYS):
+                continue
+            # 相邻两行里可能有多个纯金额（现价和原价都在附近）。
+            # 取其中**最小的那个**——现价通常小于原价。
+            # 实测：京东版式「¥25起 / 一口价|补贴¥8.7 / ¥33.7」，
+            # 按「先看下一行」会选中 33.7（原价），取最小才对。
+            cands = []
+            # 窗口放到 8 行：真实截图里价格和标签之间可能隔着
+            # 「月售400+」「商品评价(7)」「推荐买贵必赔」好几行。
+            # 仍然取最小的那个（现价小于原价），避免选到原价。
+            for d in list(range(1, 9)) + list(range(-1, -9, -1)):
+                j = i + d
+                if not (0 <= j < len(merged)):
+                    continue
+                if _is_amount_only(merged[j]):
+                    v, _why = _amount_from_line(merged[j])
+                    if v is not None and 0 < v < 100000:
+                        cands.append(v)
+            if cands:
+                price = min(cands)
+                price_prio = 8
+                break
+
+    # 原价回退：带 ¥、比现价大的行（允许带「月售」这类尾巴）
     if original is None and price is not None:
-        for line in lines:
-            if line == price_line or "¥" not in line:
+        for line in merged:
+            if "¥" not in line:
                 continue
             v, _why = _amount_from_line(line)
             if v is not None and price < v < 100000:
                 original = v
                 break
 
-    # ── 算术自洽（同坐标版）──
+    # 现价仍没读到：说明标签和数字都不在一行，且没法合并。
+    # 这时候宁可报「读不出来」，也不要拿别的数字充数。
+    if price is None:
+        for line in merged:
+            if any(k in line for k in _PRICE_KEYS):
+                result["suspicious"].append(f"现价那一行没有可用的金额：「{line}」")
+
+    # 优惠额/原价读不出来也要提示。实测「立省¥1a3」会被整段丢弃，
+    # 用户完全不知道这里本该有个数——不说出来的话，报价会显得「本来就这么便宜」。
+    for line in merged:
+        if "¥" not in line:
+            continue
+        if any(k in line for k in _SAVE_KEYS):
+            if not any(kind == "save" for kind, _v, _p in _split_block(line)):
+                msg = f"优惠额读不出来（数字可能被认坏了）：「{line}」"
+                if msg not in result["suspicious"]:
+                    result["suspicious"].append(msg)
+        elif any(k in line for k in _ORIGINAL_KEYS):
+            if not any(kind == "original" for kind, _v, _p in _split_block(line)):
+                msg = f"原价读不出来（数字可能被认坏了）：「{line}」"
+                if msg not in result["suspicious"]:
+                    result["suspicious"].append(msg)
+
+    # 任何「看着像金额但读不出来」的行都要提示。
+    # 实测「￥l9.5起」（19.5 的 1 被认成 l）会被静默跳过，
+    # 然后拿原价 28.2 当现价——不报警的话用户完全看不出来。
+    for line in merged:
+        # 情况一：带 ¥ 的价格行读不出金额
+        if "¥" in line and (("起" in line) or any(k in line for k in _PRICE_KEYS)):
+            v, why = _amount_from_line(line)
+            if v is None and why:
+                msg = f"价格读不出来（{why}）：「{line}」"
+                if msg not in result["suspicious"]:
+                    result["suspicious"].append(msg)
+        # 情况二：整行看着就是金额但混了字母（「1S」「l9.5」）
+        if (_MANGLED_AMOUNT.fullmatch(line.strip())
+                and re.search(r"\d", line) and re.search(r"[A-Za-z]", line)):
+            msg = f"这个金额可能被 OCR 认坏了：「{line}」"
+            if msg not in result["suspicious"]:
+                result["suspicious"].append(msg)
+
+    # ── 算术自洽 ──
     derived = []
     if price is not None and saved is not None and price > 0:
         calc = round(price + saved, 2)
@@ -579,27 +752,37 @@ def parse_product_page(text: str) -> dict:
     if derived:
         result["derived"] = derived
 
-    # 商家名：价格行之前的短中文行
-    if price_line:
-        idx = lines.index(price_line)
-        for line in reversed(lines[:idx]):
+    # 商家名 / 商品名
+    price_idx = None
+    for i, line in enumerate(merged):
+        if any(k in line for k in _PRICE_KEYS):
+            price_idx = i
+            break
+
+    if price_idx is not None:
+        for line in reversed(merged[:price_idx]):
             plain = re.sub(r"[^\u4e00-\u9fa5A-Za-z]", "", line)
             han = len(re.findall(r"[\u4e00-\u9fa5]", plain))
             latin = len(re.findall(r"[A-Za-z]", plain))
             if not (han >= 3 or (han == 2 and latin == 0)):
                 continue
-            if 2 <= len(plain) <= 12:
-                if any(k in plain for k in ("推荐", "评价", "商品", "描述",
-                                            "购物车", "外卖", "查看", "首页")):
-                    continue
-                result["merchant"] = plain
-                break
+            if not (2 <= len(plain) <= 12):
+                continue
+            if any(k in plain for k in ("推荐", "评价", "商品", "描述", "购物车",
+                                        "外卖", "查看", "首页", "配送", "自提",
+                                        "预订", "拼单", "更省", "好吃", "美味",
+                                        "再买", "再减", "凑单", "满减", "已减",
+                                        "补贴", "红包", "券后", "立减", "优惠",
+                                        "吃", "喝", "口感", "过瘾", "新鲜", "香甜",
+                                        "浓郁", "特别", "软糯")):
+                continue
+            result["merchant"] = plain
+            break
 
-    # 商品名
-    for line in lines:
-        if _NOISE.search(line):
-            continue
+    for line in merged[(price_idx + 1) if price_idx is not None else 0:]:
         plain = re.sub(r"\s+", "", line)
+        if _NOISE.search(plain):
+            continue
         if 3 <= len(plain) <= 40 and any(
             k in plain for k in ("蛋糕", "奶茶", "咖啡", "拿铁", "汉堡", "披萨",
                                  "套餐", "炸鸡", "寿司", "果汁", "鸡架", "小食",
