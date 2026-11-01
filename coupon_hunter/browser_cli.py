@@ -32,6 +32,7 @@ from pathlib import Path
 from .browser import (
     BrowserError,
     LOGIN_URLS,
+    launch_login_window,
     open_session,
     read_current,
     read_page,
@@ -71,17 +72,20 @@ def _ask(msg: str) -> str:
 
 
 def cmd_browser_login(opts: dict) -> int:
-    """打开浏览器让你登录，登录完**自动发现**，不用按回车。
+    """打开一个浏览器窗口让你登录。默认**不等你**，你想什么时候登都行。
 
-    有个小设计：可以先带一个关键词。
-      · 不带关键词 —— 打开平台首页，你随便怎么登
-      · 带了关键词 —— 直接打开那个关键词的搜索页
-                      未登录会被跳到登录页；登录成功后**自动回到搜索结果**，
-                      工具就地读出来。等于登录和第一次搜索合成一步，
-                      而且全程只发了一次搜索请求。
+    为什么改成不等
+    ────────────────────────────────────────
+    早先的版本是「我开着窗口，最多等你 20 分钟，登不完就超时关窗」。
+    实测那次等满了也没等到——然后窗口被关掉，等于把登录机会一起关掉。
+    现在改成独立进程拉起 Chrome，跟本程序没有父子关系：
+    你想什么时候登、登多久都行，登完自己关窗口，cookie 已经写进
+    data/browser-profile/ 了，之后「搜商家」直接能用。
+
+    如果想让我盯着确认登录成功，加 --等待 秒数（会改成自动发现模式）。
     """
     platform = opts.get("平台") or "美团"
-    wait_s = int(opts.get("等待") or 600)
+    wait_s = int(opts.get("等待") or 0)
 
     keyword = (opts.get("关键词") or "").strip()
     if not keyword:
@@ -99,7 +103,35 @@ def cmd_browser_login(opts: dict) -> int:
 
     print(WARNING)
 
-    print(f"  正在打开浏览器（{platform}）……")
+    # ── 默认路径：独立窗口，立刻返回 ──────────────────────
+    if wait_s <= 0:
+        print(f"  正在打开浏览器窗口（{platform}）……")
+        ok, info = launch_login_window(PROJECT_ROOT, url)
+        if not ok:
+            print(f"  ⚠️ {info}，改用另一种方式（会等你登录完，最多 10 分钟）")
+            print()
+            wait_s = 600
+        else:
+            print(f"  ✅ 窗口已打开（{info}）")
+            print()
+            print("  ┌─ 接下来 ──────────────────────────────────────")
+            if keyword:
+                print(f"  │ 窗口里在搜「{keyword}」，没登录会跳到登录页。")
+            else:
+                print("  │ 登录入口一般在右下角「我的」，或者页面上的「登录」。")
+            print("  │ 1. 输手机号 → 收验证码 → 登录")
+            print("  │ 2. 如果弹出「拖动滑块」，请手动拖完（我不会绕过它）")
+            print("  │ 3. 登录成功后，把这个浏览器窗口关掉")
+            print("  └───────────────────────────────────────────────")
+            print()
+            print("  这个窗口跟我没关系了，你想登多久都行，我不催也不超时。")
+            print("  登完关窗后，直接跑：")
+            print(f"      python run.py 搜商家 {'麦当劳' if not keyword else keyword}")
+            print()
+            return 0
+
+    # ── --等待 模式：我盯着，自动发现登录成功 ──────────────
+    print(f"  （盯着模式：最多等 {wait_s // 60} 分钟）")
     try:
         pw, ctx = open_session(PROJECT_ROOT, headless=False)
     except BrowserError as e:

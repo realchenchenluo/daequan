@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from coupon_hunter.browser import (  # noqa: E402
     classify,
+    find_real_browser,
+    first_existing,
     looks_like_login_url,
     search_url,
     wait_for_login,
@@ -341,6 +343,39 @@ def _():
         f"stable_checks=3 应该多等几轮，实际 3:{slow.waits} 1:{fast.waits}"
     )
     return f"3 次稳定等了 {slow.waits} 轮，1 次稳定等了 {fast.waits} 轮"
+
+
+@case("first_existing：返回第一个真实存在的")
+def _():
+    have = {"b"}
+    got = first_existing(["a", "b", "c"], exists=lambda p: p in have)
+    assert got == "b", got
+    return "跳过不存在的 a，拿到 b"
+
+
+@case("first_existing：一个都没有就返回 None")
+def _():
+    assert first_existing(["a", "b"], exists=lambda p: False) is None
+    return "不会返回空字符串或报错"
+
+
+@case("first_existing：探测函数抛 OSError 也不炸")
+def _():
+    def boom(p):
+        raise OSError("权限不足")
+
+    assert first_existing(["a"], exists=boom) is None
+    return "权限问题被吞掉，返回 None"
+
+
+@case("find_real_browser：要么同时给路径和 channel，要么都没有")
+def _():
+    exe, channel = find_real_browser()
+    assert (exe is None) == (channel is None), (exe, channel)
+    if exe:
+        assert channel in ("chrome", "msedge"), channel
+        return f"{channel} → {exe}"
+    return "本机没有 Chrome/Edge，会退回 Playwright 自带 Chromium"
 
 
 def main() -> int:

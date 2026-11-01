@@ -32,6 +32,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +47,54 @@ LOGIN_URLS = {
     "饿了么": "https://h5.ele.me/login",
     "淘宝闪购": "https://h5.ele.me/login",
 }
+
+# 用**你本机真实的 Chrome / Edge**，而不是 Playwright 自带的那份 Chromium。
+#
+# 为什么这点很重要
+# ────────────────────────────────────────
+# 登录和读页面必须用**同一个浏览器程序**打开**同一个配置目录**。
+# Chrome 127 之后的 cookie 是"应用绑定加密"的，绑在浏览器程序上，
+# A 浏览器存的 cookie，B 浏览器解不开。混着用会出现
+# "明明登录了，读页面时又是登录墙"这种鬼问题。
+_CHROME_CANDIDATES = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+)
+_EDGE_CANDIDATES = (
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+)
+
+
+def first_existing(paths, exists=None):
+    """返回第一个真实存在的路径。都不存在就返回 None。
+
+    exists 可注入，方便在不碰真实文件系统的前提下单测这段挑选逻辑。
+    """
+    probe = exists or os.path.exists
+    for p in paths:
+        try:
+            if p and probe(p):
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def find_real_browser():
+    """找本机真实安装的 Chrome 或 Edge。返回 (可执行文件路径, Playwright 的 channel 名)。
+
+    优先 Chrome，其次 Edge。都找不到返回 (None, None)，
+    这时退回 Playwright 自带的 Chromium（能用，但和真实浏览器不共享登录态）。
+    """
+    exe = first_existing(_CHROME_CANDIDATES)
+    if exe:
+        return exe, "chrome"
+    exe = first_existing(_EDGE_CANDIDATES)
+    if exe:
+        return exe, "msedge"
+    return None, None
 
 
 class BrowserError(Exception):
@@ -134,35 +184,89 @@ def open_session(root: Path, headless: bool = False, timeout: int = 30000):
 
     返回 (playwright, context)。用完记得 context.close() / pw.stop()。
 
+    优先用你本机真实的 Chrome/Edge（channel=chrome/msedge），
+    原因见文件开头那段：cookie 是跟浏览器程序绑定的，混着用会读不到登录态。
+
     headless=False 是刻意的：无头浏览器更容易被识别成机器人，
-    而且首次登录需要你看到窗口扫码。真要用无头，得自己承担更大被拦的概率。
+    而且首次登录需要你看到窗口。
 
     持久化目录 data/browser-profile 会记住登录态，所以只需登录一次。
     ⚠️ 这个目录里存着你的登录 cookie，**不要拷给别人**，也不要提交到代码仓库
     （.gitignore 已经把它排除了）。
     """
     sync_playwright = _playwright()
+    _, channel = find_real_browser()
     pw = sync_playwright().start()
+
+    kwargs = dict(
+        user_data_dir=str(_profile_dir(root)),
+        headless=headless,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 900},
+    )
     try:
-        ctx = pw.chromium.launch_persistent_context(
-            user_data_dir=str(_profile_dir(root)),
-            headless=headless,
-            locale="zh-CN",
-            viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        if channel:
+            ctx = pw.chromium.launch_persistent_context(channel=channel, **kwargs)
+        else:
+            ctx = pw.chromium.launch_persistent_context(
+                args=["--disable-blink-features=AutomationControlled"], **kwargs
+            )
     except Exception as e:
         pw.stop()
         msg = str(e)
         # 同一个登录态目录同时只能被一个浏览器占用。
-        # 上一轮的浏览器没关干净时，Chromium 报的错很难看懂，这里翻译成人话。
+        # 用户在「登录浏览器」开的窗口没关时就会撞上这个，报错原文很难看懂。
         if "ProcessSingleton" in msg or "SingletonLock" in msg or "already in use" in msg:
             raise BrowserError(
-                "登录态目录正被另一个浏览器占着。先把之前打开的那个浏览器窗口关掉，再重试。\n"
-                "（如果确定没有窗口了，等一下再试——进程退出有时要几秒。）"
+                "登录态目录正被另一个浏览器窗口占着。\n"
+                "  如果你还开着「登录浏览器」打开的那个窗口，登录完请先把它关掉，再跑这条命令。\n"
+                "  （确定没有窗口了还报这个，等几秒再试——Chrome 退出有时要缓一下。）"
             ) from e
         raise BrowserError(f"浏览器启动失败：{msg}") from e
     return pw, ctx
+
+
+def launch_login_window(root: Path, url: str) -> tuple[bool, str]:
+    """开一个**独立**的浏览器窗口让你登录，然后立刻返回，不等你。
+
+    为什么不在这里等你登完
+    ────────────────────────────────────────
+    之前的做法是「我开着窗口，最多等你 20 分钟」。实测等满了也没等到，
+    然后窗口被关掉——等于把你登录的机会一起关掉了。
+
+    改成独立进程之后：这个窗口是我用系统命令拉起来的，跟本程序没有父子绑定。
+    你想什么时候登就什么时候登，登完自己关掉窗口就行，我不催也不超时。
+    cookie 会实时写进 data/browser-profile/，下次搜商家直接能用。
+
+    返回 (是否成功拉起, 说明)。找不到真实 Chrome/Edge 时返回 False，
+    由调用方退回 Playwright 那条路。
+    """
+    exe, _ = find_real_browser()
+    if not exe:
+        return False, "本机没找到 Chrome 或 Edge"
+
+    profile = _profile_dir(root)
+    try:
+        subprocess.Popen(
+            [
+                exe,
+                f"--user-data-dir={profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-blink-features=AutomationControlled",
+                url,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=(
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            ),
+        )
+    except Exception as e:
+        return False, f"拉起浏览器失败：{e}"
+    return True, exe
 
 
 def read_current(page, wait_ms: int = 800) -> PageRead:
