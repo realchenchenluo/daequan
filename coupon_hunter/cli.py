@@ -52,6 +52,7 @@ HELP = """
   比价                      同一件商品在几个平台的到手价对比，排出最便宜的那个
   外卖比价                  同一家外卖在美团/饿了么/京东，算上券和配送费谁最便宜
   商品 <截图>               发一张商品页截图，看这单多少钱、能用什么券
+  粘贴                      读剪贴板里的菜单（配合浏览器脚本，不用登录、不碰账号）
 
 读平台页面（要登录，风险自担，详见 使用说明）：
   登录浏览器                打开浏览器让你登录，登完**自动发现**，不用按回车
@@ -776,6 +777,51 @@ def cmd_stack(opts: dict) -> int:
     if tips:
         print(render_topup(tips))
     print()
+    return 0
+
+
+def cmd_paste(opts: dict) -> int:
+    """读剪贴板里的菜单文本，解析成菜品清单和合计。
+
+    文本来源是 `web/menu-sniffer.user.js`：它装在**你自己的浏览器**里，
+    你在店铺页点一下按钮，它把这一页的菜名和价格整理好复制到剪贴板。
+
+    这条路的取舍：工具全程不碰你的登录态，只碰一段文字。
+    代价是你得自己点进去、点一下按钮。
+    """
+    from .clipboard import ClipboardError, read_source
+    from .menu import parse_menu_text, render_menu, to_offer_spec
+
+    arg = ""
+    extra = opts.get("_args") or []
+    if extra:
+        arg = str(extra[0])
+
+    print()
+    try:
+        text = read_source(arg)
+    except ClipboardError as e:
+        print(f"  ✗ {e}")
+        print()
+        return 1
+
+    if not text.strip():
+        print("  剪贴板是空的，什么也没读到。")
+        print()
+        print("  用法：先在店铺页点「📋 提取菜单」，再点「复制这段文本」，然后回来跑这条命令。")
+        print("  也可以把内容存成 txt，用 python run.py 粘贴 D:\\菜单.txt")
+        print()
+        return 1
+
+    menu = parse_menu_text(text)
+    print(render_menu(menu))
+    print()
+
+    if menu.dishes:
+        print("  想接着算券和配送费，把这个填进「外卖比价」：")
+        print(f'      python run.py 外卖比价 --方案 "{to_offer_spec(menu)}"')
+        print()
+
     return 0
 
 
@@ -1532,6 +1578,7 @@ _COMMANDS = {
     "登录浏览器": "blogin", "blogin": "blogin",
     "读页面": "bpage", "抓价": "bpage", "bpage": "bpage",
     "搜商家": "bsearch", "搜店": "bsearch", "bsearch": "bsearch",
+    "粘贴": "paste", "菜单": "paste", "paste": "paste",
     "比价": "compare", "compare": "compare",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
@@ -1606,6 +1653,8 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "bsearch":
         from .browser_cli import cmd_search
         return cmd_search(opts)
+    if cmd == "paste":
+        return cmd_paste(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":
