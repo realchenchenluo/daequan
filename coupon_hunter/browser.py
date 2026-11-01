@@ -32,10 +32,19 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PROFILE_DIR_NAME = "browser-profile"
+
+# 各平台的登录页。直接打开这个页面，用户看到的第一个东西就是登录表单。
+LOGIN_URLS = {
+    "美团": "https://h5.waimai.meituan.com/login",
+    "饿了么": "https://h5.ele.me/login",
+    "淘宝闪购": "https://h5.ele.me/login",
+}
 
 
 class BrowserError(Exception):
@@ -85,6 +94,21 @@ def classify(title: str, text: str) -> tuple[bool, bool]:
     looks_captcha = any(k in head for k in CAPTCHA_HINTS)
     looks_login = any(k in head for k in LOGIN_HINTS) and not looks_captcha
     return looks_login, looks_captcha
+
+
+# 只认 URL 的**路径部分**，不看查询串。
+# 因为登录跳转的 back_url 参数里也带着 "/login" 字样，
+# 扫整个 URL 会把"已经登录成功、只是地址里带了回跳参数"误判成还在登录页。
+_LOGIN_PATH_MARKERS = ("/login", "/passport", "/signin", "/sign_in")
+
+
+def looks_like_login_url(url: str) -> bool:
+    """这个地址是不是登录页。"""
+    try:
+        path = urlsplit(url or "").path.lower()
+    except ValueError:
+        return False
+    return any(m in path for m in _LOGIN_PATH_MARKERS)
 
 
 def _profile_dir(root: Path) -> Path:
@@ -141,18 +165,21 @@ def open_session(root: Path, headless: bool = False, timeout: int = 30000):
     return pw, ctx
 
 
-def read_page(page, url: str, wait_ms: int = 3500) -> PageRead:
-    """打开一个页面并读它的可见文字。"""
-    out = PageRead(url=url)
+def read_current(page, wait_ms: int = 800) -> PageRead:
+    """读**当前这一屏**的文字，不做任何跳转。
+
+    和 read_page 的区别很关键：登录之后页面已经停在搜索结果上了，
+    这时再 goto 一次等于二次请求——没必要，也平白多一次访问。
+    """
+    out = PageRead()
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(wait_ms)
+        if wait_ms:
+            page.wait_for_timeout(wait_ms)
         out.title = page.title() or ""
-        body = page.locator("body")
-        out.text = body.inner_text(timeout=8000)[:20000]
+        out.text = page.locator("body").inner_text(timeout=8000)[:20000]
         out.url = page.url
     except Exception as e:
-        raise BrowserError(f"打开页面失败：{e}") from e
+        raise BrowserError(f"读页面失败：{e}") from e
 
     # 判断是否被拦
     out.looks_login, out.looks_captcha = classify(out.title, out.text)
@@ -160,11 +187,111 @@ def read_page(page, url: str, wait_ms: int = 3500) -> PageRead:
     if out.looks_captcha:
         out.notes.append("页面弹了验证码/滑块。工具不会尝试绕过——请手动完成后重试。")
     elif out.looks_login:
-        out.notes.append("页面要求登录。先运行「python run.py 登录浏览器」完成扫码登录。")
+        out.notes.append("页面要求登录。先运行「python run.py 登录浏览器」完成登录。")
     elif len(out.text.strip()) < 80:
         out.notes.append("页面几乎是空的，可能没加载出来，或者需要登录。")
 
     return out
+
+
+def read_page(page, url: str, wait_ms: int = 3500) -> PageRead:
+    """打开一个页面并读它的可见文字。"""
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        raise BrowserError(f"打开页面失败：{e}") from e
+    return read_current(page, wait_ms)
+
+
+def _snapshot(page) -> tuple[str, str]:
+    """取当前页的标题和正文开头。取不到就当空，不抛异常。"""
+    try:
+        title = page.title() or ""
+    except Exception:
+        title = ""
+    try:
+        text = page.locator("body").inner_text(timeout=5000)[:1500]
+    except Exception:
+        text = ""
+    return title, text
+
+
+def wait_for_login(
+    ctx,
+    timeout_s: int = 600,
+    poll_ms: int = 1500,
+    log=None,
+    stable_checks: int = 3,
+) -> tuple[bool, str]:
+    """等你在这个浏览器里登录完，**自动发现**，不用按回车。
+
+    判断依据：页面地址不是登录页、内容里没有登录墙/验证码，
+    并且**连续稳定 stable_checks 次**都是这个样子。
+
+    为什么要"连续稳定"而不是"看一眼就断言"
+    ────────────────────────────────────────
+    实测踩过：第一次搜「麦当劳」时，页面先渲染出美团页脚（非空、无登录字样），
+    1.5 秒后才弹出「身份核实 / 请按照说明拖动滑块」。
+    只看一眼就断言成功，等于把一张验证码页当成登录成功，后面读出来的全是垃圾。
+
+    碰到验证码**不会失败退出**——那等于把用户唯一能救回来的机会掐掉。
+    它会通过 log 提醒一次，然后继续等，等你自己把滑块拖完。
+
+    全程只读当前标签页的地址和文字，**不额外发任何请求**。
+    """
+    deadline = time.monotonic() + max(3, int(timeout_s))
+    last_sig = None
+    stable = 0
+    told_captcha = False
+
+    while time.monotonic() < deadline:
+        pages = [p for p in ctx.pages if not p.is_closed()]
+        page = pages[-1] if pages else None
+        if page is None:
+            return False, "浏览器被关掉了，登录态没保存上。"
+
+        try:
+            url = page.url
+        except Exception:
+            return False, "浏览器被关掉了，登录态没保存上。"
+
+        title, text = _snapshot(page)
+        login_wall, captcha = classify(title, text)
+
+        if captcha:
+            if not told_captcha:
+                told_captcha = True
+                if log:
+                    log("页面上出现了滑块/验证码——请在浏览器窗口里手动拖一下，我继续等。")
+            stable, last_sig = 0, None
+        elif looks_like_login_url(url) or login_wall or not text.strip():
+            # 还在登录页、或者页面是空壳，继续等
+            stable, last_sig = 0, None
+        else:
+            sig = url + "|" + text[:60]
+            if sig == last_sig:
+                stable += 1
+            else:
+                last_sig, stable = sig, 1
+            if stable >= stable_checks:
+                return True, f"登录成功（当前页面：{title[:30] or url[:50]}）"
+
+        try:
+            page.wait_for_timeout(poll_ms)
+        except Exception:
+            # 页面在切换中会短暂抛错，等一下再来
+            time.sleep(poll_ms / 1000)
+
+    if told_captcha:
+        return False, (
+            f"等了 {int(timeout_s)} 秒，滑块/验证码一直没有被处理。\n"
+            "  重新跑这条命令，然后在弹出的浏览器窗口里把滑块拖完即可。"
+        )
+    return False, (
+        f"等了 {int(timeout_s)} 秒还没登录成功。\n"
+        "  可能原因：还没输完验证码、验证码收不到、或者浏览器窗口被关掉了。\n"
+        "  重新跑一次这条命令即可，登录态目录不会丢。"
+    )
 
 
 # 各平台的搜索结果页地址。{kw} 会被替换成 URL 编码后的关键词。

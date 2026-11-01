@@ -29,7 +29,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .browser import BrowserError, open_session, read_page, read_search
+from .browser import (
+    BrowserError,
+    LOGIN_URLS,
+    open_session,
+    read_current,
+    read_page,
+    read_search,
+    search_url,
+    wait_for_login,
+)
 from .config import PROJECT_ROOT
 from .storelist import parse_store_list, render_stores
 
@@ -62,9 +71,31 @@ def _ask(msg: str) -> str:
 
 
 def cmd_browser_login(opts: dict) -> int:
-    """打开一个可交互的浏览器，让用户自己扫码登录。"""
+    """打开浏览器让你登录，登录完**自动发现**，不用按回车。
+
+    有个小设计：可以先带一个关键词。
+      · 不带关键词 —— 打开平台首页，你随便怎么登
+      · 带了关键词 —— 直接打开那个关键词的搜索页
+                      未登录会被跳到登录页；登录成功后**自动回到搜索结果**，
+                      工具就地读出来。等于登录和第一次搜索合成一步，
+                      而且全程只发了一次搜索请求。
+    """
     platform = opts.get("平台") or "美团"
-    url = opts.get("网址") or HOME_URLS.get(platform, HOME_URLS["美团"])
+    wait_s = int(opts.get("等待") or 600)
+
+    keyword = (opts.get("关键词") or "").strip()
+    if not keyword:
+        extra = opts.get("_args") or []
+        if extra:
+            keyword = str(extra[0]).strip()
+
+    override = opts.get("网址") or ""
+    if override:
+        url = override
+    elif keyword:
+        url = search_url(platform, keyword)
+    else:
+        url = LOGIN_URLS.get(platform) or HOME_URLS.get(platform, HOME_URLS["美团"])
 
     print(WARNING)
 
@@ -77,16 +108,70 @@ def cmd_browser_login(opts: dict) -> int:
 
     try:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        except Exception as e:
+            print(f"  ✗ 打开页面失败：{e}")
+            return 1
+
         print()
-        print("  浏览器已经打开了，请在里面完成登录（一般是点「我的」→ 手机号/扫码登录）。")
-        print("  登录成功后**不要关浏览器**，回到这里按回车。")
+        print("  ┌─ 接下来请你在浏览器窗口里操作 ─────────────────")
+        if keyword:
+            print(f"  │ 正在尝试搜「{keyword}」。没登录的话会跳到登录页。")
+            print("  │ 输入手机号 → 收验证码 → 登录。")
+            print("  │ 如果弹出「拖动滑块」的验证，请手动拖完——我不会绕过它。")
+        else:
+            print("  │ 登录入口一般在右下角「我的」，或者页面上的「登录」。")
+            print("  │ 输入手机号 → 收验证码 → 登录。")
+            print("  │ 如果弹出「拖动滑块」的验证，请手动拖完——我不会绕过它。")
+        print("  │ 登录完成后**什么都不用按**，我会自己发现。")
+        print(f"  │ （最多等 {wait_s // 60} 分钟）")
+        print("  └───────────────────────────────────────────────")
+        print(flush=True)
+
+        ok, msg = wait_for_login(
+            ctx,
+            timeout_s=wait_s,
+            log=lambda s: print(f"  ⚠️ {s}", flush=True),
+        )
         print()
-        _ask("  登录好了就按回车……")
+        if not ok:
+            print(f"  ✗ {msg}")
+            print()
+            return 2
+
+        # 光靠"页面不像登录页"还不够，实测被坑过一次：
+        # 页脚先渲染出来，1.5 秒后滑块才出现，于是误判成登录成功。
+        # 所以这里再读一次真实页面，用**内容**说话。
+        pg = [p for p in ctx.pages if not p.is_closed()]
+        r = read_current(pg[-1], wait_ms=1200) if pg else None
+        if r is None:
+            print("  ✗ 浏览器被关掉了。")
+            return 2
+        if r.looks_captcha or r.looks_login:
+            print("  ✗ 还没真正登录成功——页面上是登录墙或滑块验证。")
+            print("     请重新跑一次，并在浏览器窗口里把滑块拖完 / 完成登录。")
+            print()
+            return 2
+
+        print(f"  ✅ {msg}")
+        print("  ✅ 登录态已保存到 data/browser-profile/（下次不用再登录）")
+        print("     提示：登录态通常几天到几周过期，过期了重跑这条命令即可。")
         print()
-        print("  已保存登录态到 data/browser-profile/（下次不用再登录）。")
-        print("  提示：登录态通常几天到几周过期，过期了重新跑这条命令即可。")
-        print()
+
+        if keyword:
+            stores = parse_store_list(r.text)
+            print(f"  ── 搜「{keyword}」的结果 ──")
+            print()
+            print(render_stores(stores, keyword))
+            if not stores:
+                # 读不出来就把原文露几行：可能是没定位、或者版式变了
+                print()
+                print("  这一页实际显示的文字（前 15 行，用于判断原因）：")
+                head = [l.strip() for l in r.text.splitlines() if l.strip()][:15]
+                for line in head:
+                    print(f"    {line[:70]}")
+            print()
     except Exception as e:
         print(f"  ✗ {e}")
         return 1
