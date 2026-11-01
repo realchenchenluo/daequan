@@ -1,0 +1,17 @@
+# 可选：只有「登录浏览器 / 搜商家 / 读页面」这三个命令需要装它。
+#
+# 为什么单独列一个文件：playwright 会下载一个几百 MB 的 Chromium，
+# 而且这三条命令是**可选**的（其他所有功能都不用登录、不碰平台页面）。
+# 不想承担协议风险的人完全不必装。
+#
+# 安装：
+#   python -m pip install -r requirements-browser.txt
+#   python -m playwright install chromium
+#
+# 不装的话，搜券/叠券/外卖比价/商品截图识别全部照常工作。
+playwright>=1.40
+
+# 另外两个非 pip 的说明：
+#   · Chromium 内核要单独下：python -m playwright install chromium
+#   · 登录态存在 data/browser-profile/，这个目录等于你的登录凭证，
+#     已在 .gitignore 里排除，也别拷给别人。

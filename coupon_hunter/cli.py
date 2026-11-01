@@ -52,6 +52,14 @@ HELP = """
   比价                      同一件商品在几个平台的到手价对比，排出最便宜的那个
   外卖比价                  同一家外卖在美团/饿了么/京东，算上券和配送费谁最便宜
   商品 <截图>               发一张商品页截图，看这单多少钱、能用什么券
+
+读平台页面（要登录，风险自担，详见 使用说明）：
+  登录浏览器                打开浏览器，你自己扫码登录（只需一次）
+  搜商家 麦当劳             用你的登录态去搜，读结果页的商家和起送/配送价
+  读页面                    你点到商品页，我直接读页面文字（无 OCR 错字）
+  读页面 --平台 淘宝闪购     换平台
+  搜商家 麦当劳 --网址 <地址>  平台搜索地址变了时自己指定
+
   关注                      看关注清单（券自动更新，到目标价就提醒）
   关注 --名 "某耳机" --价 "京东=399,拼多多=359" --目标 350   加一个
 
@@ -113,6 +121,7 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
         "仅本机": False,
         "打开": False,
         "输出": None,
+        "网址": None,
     }
 
     i = 1
@@ -175,6 +184,10 @@ def _parse(argv: list[str]) -> tuple[str, dict]:
             i += 1
         elif a in ("-o", "--输出", "--out"):
             opts["输出"] = nxt
+            i += 2
+        elif a in ("--网址", "--url"):
+            # 浏览器那几个命令用：没验证过的平台可以自己指到搜索页
+            opts["网址"] = nxt
             i += 2
         elif a in ("--令牌", "--token"):
             opts["令牌"] = nxt
@@ -1507,6 +1520,9 @@ _COMMANDS = {
     "外卖比价": "delivery", "外卖": "delivery", "点外卖": "delivery", "delivery": "delivery",
     "关注": "watch", "关注清单": "watch", "监控": "watch", "watch": "watch",
     "商品": "product", "识图": "product", "product": "product",
+    "登录浏览器": "blogin", "blogin": "blogin",
+    "读页面": "bpage", "抓价": "bpage", "bpage": "bpage",
+    "搜商家": "bsearch", "搜店": "bsearch", "bsearch": "bsearch",
     "比价": "compare", "compare": "compare",
     "菜单": "menu", "menu": "menu",
     "帮助": "help", "help": "help", "-h": "help", "--help": "help",
@@ -1572,6 +1588,15 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_watch(opts)
     if cmd == "product":
         return cmd_product(opts)
+    if cmd == "blogin":
+        from .browser_cli import cmd_browser_login
+        return cmd_browser_login(opts)
+    if cmd == "bpage":
+        from .browser_cli import cmd_read_page
+        return cmd_read_page(opts)
+    if cmd == "bsearch":
+        from .browser_cli import cmd_search
+        return cmd_search(opts)
     if cmd == "search":
         return cmd_search(opts, sources)
     if cmd == "login":
