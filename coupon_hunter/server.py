@@ -7,9 +7,17 @@
   · 数据在内存里缓存，页面上点「刷新」就能重新抓，不用回到终端。
 
 安全设计（都是有意为之，改代码时别放松）：
-  · 只认下面四条固定路由，**不做静态文件服务**，所以不存在路径穿越问题；
-  · 只接受 GET 和 HEAD，没有写操作，不会有 CSRF 之类的问题；
+  · 只认固定路由，**不做静态文件服务**，所以不存在路径穿越问题；
+  · 除 /upload 和 /api/menu/parse 外没有写操作，且都是本机用途；
   · 不收集、不记录任何请求内容，日志只打方法、路径、状态码。
+
+关于 /api/menu/* 这几个路由
+────────────────────────────────────────────
+它们背后是一个可见的浏览器窗口（coupon_hunter/bridge.py），
+**只有你先点了页面上的按钮它才会打开**，不然就是一个空对象，连线程都不会起。
+served 只绑 127.0.0.1 时（--仅本机）这些接口外部访问不到；
+绑 0.0.0.0 是为了手机能看券列表，但那样局域网里别人也能点到这几个按钮，
+所以页面上写清楚了：那条路会用到你的登录态。
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .config import load_config
 from .models import FetchResult
@@ -31,6 +39,26 @@ from .webpage import render
 
 DEFAULT_PORT = 8788
 DEFAULT_TTL = 600  # 缓存 10 分钟，点刷新可以强制绕过
+
+
+# ──────────────────────────────────────────────────────────
+# 浏览器桥（懒创建：没人点按钮就一个线程都不起）
+# ──────────────────────────────────────────────────────────
+
+_BRIDGE = None
+_BRIDGE_LOCK = threading.Lock()
+
+
+def get_bridge():
+    """拿到全局唯一的浏览器桥。第一次调用时才创建对象，仍不起线程。"""
+    global _BRIDGE
+    with _BRIDGE_LOCK:
+        if _BRIDGE is None:
+            from .bridge import Bridge
+            from .config import PROJECT_ROOT
+
+            _BRIDGE = Bridge(PROJECT_ROOT)
+        return _BRIDGE
 
 
 # ──────────────────────────────────────────────────────────
@@ -119,13 +147,30 @@ class Handler(BaseHTTPRequestHandler):
             self._refresh()
         elif path in ("/upload", "/比价"):
             self._upload_page()
+        elif path in ("/menu", "/菜单"):
+            self._menu_page()
+        elif path == "/demo-menu":
+            self._demo_menu_page()
+        elif path == "/api/menu/status":
+            self._menu_status()
+        elif path == "/api/menu/open":
+            self._menu_open()
+        elif path == "/api/menu/grab":
+            self._menu_grab()
+        elif path == "/api/menu/close":
+            self._menu_close()
         elif path == "/favicon.ico":
             self._send(b"", "image/x-icon", 204)
         else:
             self._send("404 Not Found".encode("utf-8"), "text/plain; charset=utf-8", 404)
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/menu/parse":
+            self._menu_parse()
+            return
         if path != "/upload":
             self._send(b"404 Not Found", "text/plain; charset=utf-8", 404)
             return
@@ -150,6 +195,80 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = 500, {"error": f"处理失败：{type(e).__name__}: {e}"}
         self._json(payload, code)
 
+    # ── 菜单相关 ────────────────────────────────────────
+    def _menu_page(self) -> None:
+        from .menu_page import render_menu_page
+
+        self._send(render_menu_page().encode("utf-8"), "text/html; charset=utf-8")
+
+    def _demo_menu_page(self) -> None:
+        from .menu_page import render_demo_page
+
+        self._send(render_demo_page().encode("utf-8"), "text/html; charset=utf-8")
+
+    def _menu_status(self) -> None:
+        bridge = get_bridge()
+        self._json({"ok": True, **bridge.state})
+
+    def _menu_open(self) -> None:
+        q = parse_qs(urlparse(self.path).query)
+        platform = (q.get("platform") or ["美团"])[0] or "美团"
+        keyword = (q.get("keyword") or [""])[0]
+        url = (q.get("url") or [""])[0]
+
+        # 只接受 http/https，别让人把 file:// 之类塞进来
+        if url and not url.lower().startswith(("http://", "https://")):
+            self._json({"ok": False, "error": "只支持 http/https 地址"}, 400)
+            return
+        if len(keyword) > 60:
+            self._json({"ok": False, "error": "关键词太长"}, 400)
+            return
+
+        try:
+            result = get_bridge().call(
+                "open", timeout=150, platform=platform, keyword=keyword, url=url
+            )
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        self._json(result)
+
+    def _menu_grab(self) -> None:
+        try:
+            result = get_bridge().call("grab", timeout=90)
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        self._json(result)
+
+    def _menu_close(self) -> None:
+        try:
+            result = get_bridge().call("close", timeout=40)
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        self._json(result)
+
+    def _menu_parse(self) -> None:
+        from .menu import parse_menu_text, payload_from_menu
+
+        max_body = 2 * 1024 * 1024
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > max_body:
+            self._json({"ok": False, "error": "内容是空的，或者太大了"}, 413)
+            return
+
+        raw = self.rfile.read(length)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", "replace")
+
+        menu = parse_menu_text(text)
+        payload = payload_from_menu(menu)
+        payload["dropped"] = menu.dropped[:20]
+        self._json(payload)
+
     def _upload_page(self) -> None:
         from .upload import render_upload_page
 
@@ -164,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
             title=self.page_title,
             refresh_url="/refresh",
             note=f"数据抓取于 {updated}（缓存 {self.cache.ttl // 60} 分钟）",
-            source_note="点右上角「刷新」可立即重新抓取；要外卖比价请访问 /upload",
+            source_note="点右上角「刷新」可立即重新抓取；要外卖比价请访问 /upload；要读某家店的菜单去 /menu",
         )
         self._send(html_text.encode("utf-8"), "text/html; charset=utf-8")
 

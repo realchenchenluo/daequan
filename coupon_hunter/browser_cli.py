@@ -31,6 +31,7 @@ from pathlib import Path
 
 from .browser import (
     BrowserError,
+    HOME_URLS,
     LOGIN_URLS,
     launch_login_window,
     open_session,
@@ -56,12 +57,6 @@ WARNING = """
   继续使用即表示你已知悉并自行承担上述风险。
 
 """
-
-HOME_URLS = {
-    "美团": "https://h5.waimai.meituan.com/waimai/mindex/home",
-    "淘宝闪购": "https://h5.ele.me/",
-    "饿了么": "https://h5.ele.me/",
-}
 
 
 def _ask(msg: str) -> str:

@@ -190,3 +190,30 @@ def to_offer_spec(menu: Menu, platform: str = "") -> str:
     """
     name = platform or menu.source or "未知平台"
     return f"{name}|{menu.total:.2f}"
+
+
+def payload_from_menu(menu: Menu, notes=None) -> dict:
+    """给界面/接口用的统一数据结构。
+
+    本地服务和浏览器桥都调这个，保证「粘贴」和「一键抓」两条路
+    返回的东西长得一模一样——界面上就不用写两套渲染逻辑。
+    """
+    return {
+        "ok": True,
+        "store": menu.store,
+        "source": menu.source,
+        "dishes": [
+            {
+                "name": d.name,
+                "price": d.price,
+                "original": d.original,
+                "saved": d.saved,
+            }
+            for d in menu.dishes
+        ],
+        "total": menu.total,
+        "original_total": menu.original_total,
+        "text": render_menu(menu),
+        "offer_spec": to_offer_spec(menu),
+        "notes": list(notes or []),
+    }

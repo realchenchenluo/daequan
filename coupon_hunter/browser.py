@@ -48,6 +48,14 @@ LOGIN_URLS = {
     "淘宝闪购": "https://h5.ele.me/login",
 }
 
+# 各平台的首页。放在这里而不是 browser_cli，因为 bridge.py 也要用；
+# 之前它定义在 browser_cli 里，结果 bridge 从 browser 导入时炸了一次。
+HOME_URLS = {
+    "美团": "https://h5.waimai.meituan.com/waimai/mindex/home",
+    "淘宝闪购": "https://h5.ele.me/",
+    "饿了么": "https://h5.ele.me/",
+}
+
 # 用**你本机真实的 Chrome / Edge**，而不是 Playwright 自带的那份 Chromium。
 #
 # 为什么这点很重要
