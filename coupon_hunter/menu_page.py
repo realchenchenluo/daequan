@@ -141,6 +141,15 @@ function money(v){
   return '¥' + Number(v || 0).toFixed(2);
 }
 
+// 「淘宝闪购/饿了么」这种东西没法直接塞进 <select>，统一成可选值
+function platformForSelect(source){
+  const s = String(source || '');
+  if (s.indexOf('美团') >= 0) return '美团';
+  if (s.indexOf('饿了么') >= 0 || s.indexOf('淘宝') >= 0) return '淘宝闪购';
+  if (s.indexOf('京东') >= 0) return '京东外卖';
+  return '美团';
+}
+
 function render(data){
   const out = $('out');
   if (!data || data.ok === false){
@@ -186,12 +195,28 @@ function render(data){
     spec = '<div class="spec">拿去比价：' + esc(data.offer_spec) + '</div>';
   }
 
+  // 顺带读到的店铺优惠，以及去「最高折扣」的入口
+  let promoBox = '';
+  const sp = data.store_promos || [];
+  if (sp.length){
+    promoBox += '<div class="warnbox" style="margin-top:12px">'
+      + '这一页还读到了店铺优惠：<b>'
+      + sp.map(function(p){ return esc(p.describe || p.text); }).join('、')
+      + '</b></div>';
+  }
+
+  let toDiscount = '<div class="spec">'
+    + '<a class="link" style="color:var(--blue);text-decoration:none" href="/discount?'
+    + 'platform=' + encodeURIComponent(platformForSelect(data.source))
+    + '&items=' + encodeURIComponent(Number(data.total || 0).toFixed(2))
+    + '">去算最高折扣（叠加平台券）→</a></div>';
+
   let notes = '';
   (data.notes || []).forEach(function(n){
     notes += '<div class="warnbox">· ' + esc(n) + '</div>';
   });
 
-  head += rows + total + spec + notes + '</div>';
+  head += rows + total + spec + promoBox + toDiscount + notes + '</div>';
   out.innerHTML = head;
 }
 
@@ -302,6 +327,8 @@ DEMO_PAGE = """<!DOCTYPE html>
   .price{font-weight:800;color:#e8452c;font-size:17px}
   .free{background:#e9f7ee;color:#1a9e46;border-radius:12px;padding:14px;
         margin-bottom:10px;font-weight:600}
+  .promo{background:#fff6e5;color:#b26b00;border-radius:12px;padding:12px 14px;
+         margin-bottom:12px;font-weight:600}
 </style>
 </head>
 <body>
@@ -310,6 +337,8 @@ DEMO_PAGE = """<!DOCTYPE html>
   <div class="meta">
     <span>评分 4.8分</span><span>月售9999+</span><span>起送</span><span>¥20</span>
   </div>
+
+  <div class="promo">满30减5 满50减8 新客立减10元</div>
 
   <div class="item">
     <span class="name">麦辣鸡腿堡</span>

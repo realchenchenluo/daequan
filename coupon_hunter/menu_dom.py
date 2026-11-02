@@ -129,6 +129,10 @@ def _looks_like_name(text: str) -> bool:
     # 精确匹配抓不住它（它不是一个固定词），所以这里按前缀拦。
     if _LABEL_PREFIX.match(t):
         return False
+    # 「满30减5」这类优惠文案也不是菜名。用「满+数字」判，而不是「满」开头，
+    # 免得把「满汉全席」这种真菜名误杀。
+    if re.match(r"^满\s*\d", t):
+        return False
     # 纯符号 / 纯日期 / 纯数字串
     if not re.search(r"[\u4e00-\u9fffA-Za-z]", t):
         return False

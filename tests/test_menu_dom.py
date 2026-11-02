@@ -375,6 +375,21 @@ def _():
     return "只有鸡腿堡，店名留在 store 里"
 
 
+@case("「满30减5」这种优惠文案不能当菜名")
+def _():
+    nodes = [
+        node("满30减5", 20, 60, w=80),
+        node("鸡腿堡", 20, 120, w=70),
+        node("¥12.9", 300, 122, w=52),
+    ]
+    assert not _looks_like_name("满30减5")
+    ex = extract_from_nodes(nodes)
+    assert [d.name for d in ex.menu.dishes] == ["鸡腿堡"], ex.menu.dishes
+    # 但「满汉全席」这种真菜名不能被误杀
+    assert _looks_like_name("满汉全席")
+    return "优惠文案拦住，真菜名保留"
+
+
 def main() -> int:
     failed = 0
     for name, fn in CASES:

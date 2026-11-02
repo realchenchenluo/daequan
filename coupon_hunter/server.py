@@ -151,6 +151,10 @@ class Handler(BaseHTTPRequestHandler):
             self._menu_page()
         elif path == "/demo-menu":
             self._demo_menu_page()
+        elif path in ("/discount", "/折扣"):
+            self._discount_page()
+        elif path == "/api/discount/plan":
+            self._discount_plan()
         elif path == "/api/menu/status":
             self._menu_status()
         elif path == "/api/menu/open":
@@ -205,6 +209,73 @@ class Handler(BaseHTTPRequestHandler):
         from .menu_page import render_demo_page
 
         self._send(render_demo_page().encode("utf-8"), "text/html; charset=utf-8")
+
+    # ── 折扣规划 ────────────────────────────────────────
+    def _discount_page(self) -> None:
+        from .discount_page import render_discount_page
+
+        self._send(render_discount_page().encode("utf-8"), "text/html; charset=utf-8")
+
+    def _discount_plan(self) -> None:
+        """算一单最多能省多少。
+
+        通用券从券缓存里取（就是主页那份数据，不额外抓）；
+        店家券要么由前端把文本传上来，要么复用浏览器桥上一次抓取的结果。
+        """
+        from .discount import build_plan, parse_store_promos, plan_to_dict, promos_from_dicts
+
+        q = parse_qs(urlparse(self.path).query)
+
+        def one(key: str, default: str = "") -> str:
+            return (q.get(key) or [default])[0] or default
+
+        def num(key: str, default: float = 0.0) -> float:
+            try:
+                v = float(one(key, str(default)))
+            except (TypeError, ValueError):
+                return default
+            return v if 0 <= v <= 100000 else default
+
+        platform = one("platform", "美团")
+        items = num("items")
+        delivery = num("delivery")
+        packing = num("packing")
+        member = one("member") in ("1", "true", "yes", "on")
+
+        # 店家券：优先用显式传上来的文本，其次用上次抓取的结果
+        promos_text = one("promos")
+        if promos_text:
+            store_promos = parse_store_promos(promos_text[:8000])
+        else:
+            state = get_bridge().state
+            store_promos = promos_from_dicts(state.get("store_promos"))
+
+        coupons = []
+        try:
+            coupons, _result, _at = self.cache.get()
+        except Exception:  # noqa: BLE001
+            coupons = []
+
+        # 平台名对不齐（「淘宝闪购」vs「淘宝」）时用互相包含来放宽
+        universal = [
+            c
+            for c in coupons
+            if platform and (platform in (c.platform or "") or (c.platform or "") in platform)
+        ]
+
+        plan = build_plan(
+            platform=platform,
+            items=items,
+            delivery=delivery,
+            packing=packing,
+            store_promos=store_promos,
+            universal=universal,
+            member=member,
+        )
+        payload = plan_to_dict(plan)
+        payload["coupon_pool"] = len(universal)
+        payload["grabbed_store"] = str(get_bridge().state.get("grabbed_title") or "")
+        self._json(payload)
 
     def _menu_status(self) -> None:
         bridge = get_bridge()
@@ -283,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
             title=self.page_title,
             refresh_url="/refresh",
             note=f"数据抓取于 {updated}（缓存 {self.cache.ttl // 60} 分钟）",
-            source_note="点右上角「刷新」可立即重新抓取；要外卖比价请访问 /upload；要读某家店的菜单去 /menu",
+            source_note="点右上角「刷新」可立即重新抓取；读某家店菜单去 /menu；算这单最多省多少去 /discount；比价去 /upload",
         )
         self._send(html_text.encode("utf-8"), "text/html; charset=utf-8")
 

@@ -29,7 +29,8 @@ import time
 from pathlib import Path
 
 from .browser import BrowserError, HOME_URLS, open_session, search_url
-from .menu_dom import SNAPSHOT_JS, extract_from_snapshot
+from .discount import parse_store_promos
+from .menu_dom import SNAPSHOT_JS, extract_from_snapshot, nodes_from_snapshot
 from .menu import render_menu, to_offer_spec
 
 
@@ -48,6 +49,12 @@ class Bridge:
             "title": "",
             "platform": "",
             "started_at": 0.0,
+            # 最近一次抓取读到的店铺优惠（满减/无门槛/折扣），
+            # 「算最高折扣」那一页可以直接拿来用，不用再抓一次。
+            # 注意：关掉浏览器时不清理这两个字段——用户往往是抓完就关窗，
+            # 然后才去算账。
+            "store_promos": [],
+            "grabbed_title": "",
         }
 
     # ── 对外接口 ────────────────────────────────────────
@@ -163,8 +170,30 @@ class Bridge:
                     else:
                         snapshot = page.evaluate(SNAPSHOT_JS)
                         ex = extract_from_snapshot(snapshot or {})
+
+                        # 顺带把店铺满减读出来。页面上「满30减5」这种小字
+                        # 本身就是一个短节点，把节点文字拼起来再做正则是可行的，
+                        # 不需要额外请求、也不用再解析一遍 DOM。
+                        page_text = " ".join(
+                            n.text for n in nodes_from_snapshot(snapshot or {})
+                        )
+                        promos = parse_store_promos(page_text)
+                        promo_dicts = [
+                            {
+                                "text": p.text,
+                                "kind": p.kind,
+                                "describe": p.describe(),
+                                "threshold": p.threshold,
+                                "value": p.value,
+                            }
+                            for p in promos
+                        ]
+
                         self.state.update(
-                            url=page.url, title=(page.title() or "")[:80]
+                            url=page.url,
+                            title=(page.title() or "")[:80],
+                            store_promos=promo_dicts,
+                            grabbed_title=ex.menu.store or (page.title() or "")[:80],
                         )
                         item["result"] = {
                             "ok": True,
@@ -183,6 +212,7 @@ class Bridge:
                                 }
                                 for d in ex.menu.dishes
                             ],
+                            "store_promos": promo_dicts,
                             "total": ex.menu.total,
                             "original_total": ex.menu.original_total,
                             "text": render_menu(ex.menu),
